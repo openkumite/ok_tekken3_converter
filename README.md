@@ -40,7 +40,7 @@ The disc image is the raw `.bin` (`Tekken_3_(USA)_(Track 1).bin`; a `.chd`: `chd
 | `docs/converter.md` | the steps, the developer tool, the viewer, how to check a change |
 | `docs/reference/` | the reference notes: the original game and its disc formats |
 
-It depends on [ok_converter_common](../ok_converter_common) (disc and file input/output, PlayStation media,
+It depends on [ok_converter_common](https://github.com/openkumite/ok_converter_common) (disc and file input/output, PlayStation media,
 portable float maths).
 
 `sh check.sh` runs the checks (formatting, clippy, tests, cargo deny); the git hooks and CI run it.

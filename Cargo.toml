@@ -15,7 +15,7 @@ name = "t3_convert"
 path = "src/main.rs"
 
 [dependencies]
-ok_converter_common = { path = "../ok_converter_common" }
+ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main" }
 anyhow = "1"
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 png = "0.18"

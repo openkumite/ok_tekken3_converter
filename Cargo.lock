@@ -420,6 +420,7 @@ dependencies = [
 [[package]]
 name = "ok_converter_common"
 version = "0.1.0"
+source = "git+https://github.com/openkumite/ok_converter_common?branch=main#f9a47611d6c5c0e728547af1d5ed0358a51df482"
 dependencies = [
  "anyhow",
  "flacenc",
