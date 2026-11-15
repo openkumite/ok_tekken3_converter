@@ -45,6 +45,12 @@ portable float maths).
 
 `sh check.sh` runs the checks (formatting, clippy, tests, cargo deny); the git hooks and CI run it.
 
+## Releases
+
+A tag `vX.Y.Z` (Cargo.toml's version; only organisation admins push `v*` tags) publishes a release: `t3_convert` for
+Linux (amd64, arm64), Windows and macOS (universal), with SHA256SUMS (`.github/workflows/release.yml`). `main` takes
+pull requests only, its CI passing; Dependabot opens one grouped pull request a week.
+
 ## License
 
 MIT ([LICENSE](LICENSE)). Third-party work: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
