@@ -359,7 +359,7 @@ mod tests {
         let (Ok(bin), Ok(dir)) = (std::env::var("T3_BIN"), std::env::var("T3_GAMEDATA")) else {
             return Ok(());
         };
-        let game = crate::disc::Game::load(&ok_converter_common::io::StdDisc(bin.into()))?;
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
         let seqs = read_sequences(&Exe::new(&game.exe))?;
         let j: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/shared.json"))?)?;
         let got: Vec<Value> = seqs

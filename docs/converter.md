@@ -19,7 +19,7 @@ OpenKumite runs the whole conversion through `convert_all::convert_resumable`. T
 ## `t3_convert`
 
 ```sh
-t3_convert "Tekken_3_(USA)_(Track 1).bin" assets [--only characters,stages,...] [--jobs N]  # N threads (1: none)
+t3_convert "Tekken_3_(USA).cue" assets [--only characters,stages,...] [--jobs N]  # N threads (1: none); any image format
 t3_convert --fingerprint assets            # only the manifest's fingerprint, again
 t3_convert MODULE ARGS...                  # one module by hand (t3_convert lists them)
 ```
@@ -45,7 +45,8 @@ draw calls: the screens' layouts come from the code, not typed in), `extract_mod
 orders (the SVD and 4x4 inverse in `ok_converter_common::np`). Other steps: `extract_models` (OBJ models), `qa_glb` (checks
 exported models for stretched triangles). `reference/` holds integer-exact prototypes of tricky routines (the
 camera, attack paths): `t3_convert camera_golden assets/tests/camera_golden.json` writes the camera tests' golden data. Tools that read the
-disc on their own take it from `T3_BIN`, else `Tekken_3_(USA)_(Track 1).bin` at this repository's root.
+disc on their own take it from `T3_BIN` (a disc image in any format), else `Tekken_3_(USA)_(Track 1).bin` at this
+repository's root.
 
 To redo a step use `--only`: a module run by hand gets none of convert_all's extra arguments (`export_gltf` needs
 `--with-common --with-embu`) and leaves the fingerprint as it was (`t3_convert --fingerprint assets` after).

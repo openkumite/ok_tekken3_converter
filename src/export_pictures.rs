@@ -20,7 +20,7 @@ use crate::pyjson;
 use crate::tim::{self, Block};
 use anyhow::{Context, Result, bail};
 use image::{GenericImage, GrayImage, RgbaImage};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, join, print_line};
 use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 
@@ -324,7 +324,7 @@ fn save(
 
 pub fn main(args: &[String]) -> Result<()> {
     let [src, out, ..] = args else { bail!("usage: export_pictures BIN OUTDIR") };
-    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &StdDisc(src.into()), "")
+    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &crate::disc::track1(src)?, "")
 }
 
 /// Writes the pictures under `out`.

@@ -95,7 +95,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let preview = args.iter().any(|a| a == "--preview");
     let outdir = Path::new(outdir);
     std::fs::create_dir_all(outdir).with_context(|| format!("cannot create {}", outdir.display()))?;
-    let game = disc::Game::load(&ok_converter_common::io::StdDisc(src.into()))?;
+    let game = disc::Game::load(&crate::disc::track1(src)?)?;
     let rec = &game.rec;
     let mut n = 0;
     for (i, r) in rec.iter().enumerate() {

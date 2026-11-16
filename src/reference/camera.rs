@@ -48,7 +48,7 @@ fn load_tables() -> Result<()> {
 }
 
 fn load() -> Result<Tables> {
-    let exe = disc::Iso::open(&ok_converter_common::io::StdDisc(disc::bin()))?.read("TEKKEN3/SLUS_004.02")?;
+    let exe = disc::Iso::open(&disc::track1(disc::bin())?)?.read("TEKKEN3/SLUS_004.02")?;
     let h = |o: usize| -> Result<i64> {
         let b = exe.get(o..o + 2).context("the EXE is too short for the camera tables")?;
         Ok(i16::from_le_bytes([b[0], b[1]]) as i64)

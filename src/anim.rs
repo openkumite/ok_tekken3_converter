@@ -200,7 +200,7 @@ mod tests {
         let Ok(bin) = std::env::var("T3_BIN") else {
             return Ok(());
         };
-        let game = crate::disc::Game::load(&ok_converter_common::io::StdDisc(bin.into()))?;
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
         let t_ = Tables::new(&game.exe)?;
         let want = [
             (74, 166, 27157214, 622594, 606758429620111840u64),

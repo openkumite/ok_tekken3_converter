@@ -116,7 +116,7 @@ mod tests {
         let (Ok(bin), Ok(dir)) = (std::env::var("T3_BIN"), std::env::var("T3_GAMEDATA")) else {
             return Ok(());
         };
-        let game = crate::disc::Game::load(&ok_converter_common::io::StdDisc(bin.into()))?;
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
         let j: Value = serde_json::from_str(&std::fs::read_to_string(format!("{dir}/attract.json"))?)?;
         for (n, (script, models)) in scripts(&game.rec[0])?.into_iter().zip(models(&game.rec)?).enumerate() {
             let v = &j["embu"]["variants"][n];

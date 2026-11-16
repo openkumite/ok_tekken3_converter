@@ -1,6 +1,6 @@
 [package]
 name = "ok_tekken3_converter"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Converts your own Tekken 3 disc image (PlayStation, USA, SLUS-00402) into the game data OpenKumite plays"
 license = "MIT"
@@ -15,7 +15,7 @@ name = "t3_convert"
 path = "src/main.rs"
 
 [dependencies]
-ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main" }
+ok_converter_common = { git = "https://github.com/openkumite/ok_converter_common", branch = "main", features = ["disc"] }
 anyhow = "1"
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 png = "0.18"

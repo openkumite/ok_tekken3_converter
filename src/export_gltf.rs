@@ -20,7 +20,7 @@ use crate::skel::{self, Extras, Mode, Pose, Skeleton, Spring, Springs, Tr};
 use crate::skin::{self, Vert};
 use crate::{atlas, embu, export_stages, pyjson};
 use anyhow::{Context, Result, bail};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs, jobs_from, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, jobs_from, join, print_line};
 use serde_json::{Map, Value, json};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -706,7 +706,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let with_common = args.iter().any(|a| a == "--with-common");
     let with_embu = args.iter().any(|a| a == "--with-embu");
     let ctx = Ctx { out: &StdFs(out.into()), log: &print_line, jobs: jobs_from(args) };
-    run(&ctx, &StdDisc(src.into()), "", only, with_common, with_embu)
+    run(&ctx, &crate::disc::track1(src)?, "", only, with_common, with_embu)
 }
 
 /// Writes the character models (`only` these records, or all) and index.json under `out`.

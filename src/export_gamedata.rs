@@ -9,7 +9,7 @@ use crate::gamedata_core::{Exe, read_sequences, write_json};
 use crate::gamedata_moves::{Moveset, N_ALIASES, md5_hex};
 use crate::gamedata_tables as t;
 use anyhow::{Context, Result, bail};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, join, print_line};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -90,7 +90,7 @@ data for sequences is in `shared.json sequences`.
 
 pub fn main(args: &[String]) -> Result<()> {
     let [src, outdir, ..] = args else { bail!("{USAGE}") };
-    run(&Ctx { out: &StdFs(outdir.into()), log: &print_line, jobs: 1 }, &StdDisc(src.into()), "")
+    run(&Ctx { out: &StdFs(outdir.into()), log: &print_line, jobs: 1 }, &crate::disc::track1(src)?, "")
 }
 
 /// Writes `outdir`/gamedata/.

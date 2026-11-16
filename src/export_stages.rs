@@ -30,7 +30,7 @@ use crate::glb::{Glb, f32_bytes, f64_value, u32_bytes};
 use crate::{pyjson, tim};
 use anyhow::{Context, Result, bail};
 use image::{GenericImage, Rgba, RgbaImage};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, join, print_line};
 use serde_json::{Map, Value, json};
 
 pub const SCALE: f64 = 0.001;
@@ -771,7 +771,7 @@ pub fn main(args: &[String]) -> Result<()> {
         ),
         None => None,
     };
-    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &StdDisc(src.into()), "", only)
+    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &crate::disc::track1(src)?, "", only)
 }
 
 /// Writes the stages (`only` these numbers, or all) and index.json under `out`.
