@@ -282,7 +282,7 @@ pub fn main(args: &[String]) -> Result<()> {
         let [src, out, ..] = args else {
             bail!(
                 "usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--jobs N]\n       \
-                 (IMAGE: the disc image: .cue, .bin, .iso, .chd, .ccd, .mds, .ecm or .pbp)\n       \
+                 (IMAGE: the disc image: .cue, .bin, .iso, .chd, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)\n       \
                  t3_convert --fingerprint OUTDIR     (only the manifest's fingerprint, again)"
             )
         };

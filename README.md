@@ -31,7 +31,8 @@ finished step. Converting again (a finished conversion) starts clean. `examples/
 
 The disc image is in any format ok_converter_common's `disc` module reads: a `.cue` with its `.bin` files (or the
 `.bin` alone, `Tekken_3_(USA)_(Track 1).bin`: the `.cue` or the split image's Track 2 beside it is found), `.chd`,
-`.ccd`/`.img`, `.mds`/`.mdf`, `.ecm`, a popstation `EBOOT.PBP`, or an `.iso`. The CD-audio track 2 is the menu music.
+`.ccd`/`.img`, `.mds`/`.mdf`, `.ecm`, a popstation `EBOOT.PBP`, or an `.iso`; or any of them in an archive (`.zip`,
+`.7z`, `.tar`, `.gz`, `.xz`, `.zst`: unpacked into a temporary file first). The CD-audio track 2 is the menu music.
 An `.iso` keeps only each sector's 2048 bytes of data: the XA music and the movies are not in it, so the conversion
 leaves them out and the manifest's `source.missing` says so; the fingerprint is the same. The output is about 1.4 GB.
 
