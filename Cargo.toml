@@ -1,6 +1,6 @@
 [package]
 name = "ok_tekken3_converter"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Converts your own Tekken 3 disc image (PlayStation, USA, SLUS-00402) into the game data OpenKumite plays"
 license = "MIT"

@@ -45,8 +45,8 @@ impl Iso {
     }
 }
 
-/// The disc image at `path`, in any format ok_converter_common reads (.cue/.bin, .iso, .chd, .ccd, .mds, .ecm, .pbp),
-/// with the files beside it.
+/// The disc image at `path`, in any format ok_converter_common reads (.cue/.bin, .iso, .chd, .ccd, .mds, .ecm, .pbp;
+/// or in an archive: .zip, .7z, .tar, .gz, .xz, .zst, unpacked into a temporary file), with the files beside it.
 pub fn image(path: impl AsRef<Path>) -> Result<Disc> {
     Disc::open_path(path.as_ref())
 }
