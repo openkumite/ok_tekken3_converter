@@ -1,6 +1,6 @@
 //! convert_all: convert everything OpenKumite needs from your own disc image into standard formats, once.
 //!
-//! usage: t3_convert "Tekken_3_(USA)_(Track 1).bin" OUTDIR [--only characters,stages,...] [--jobs N]
+//! usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--jobs N]   (IMAGE: .cue, .bin, .iso, .chd, ...)
 //!        t3_convert --fingerprint OUTDIR     (only the manifest's fingerprint, again)
 //!
 //! OUTDIR layout (OpenKumite reads only this): docs/converter.md. `convert` runs the steps in `STEPS`
@@ -11,7 +11,7 @@ use crate::{
     export_theater, pyjson,
 };
 use anyhow::{Context, Result, bail};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs, jobs_from, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, jobs_from, join, print_line};
 use serde_json::{Map, Value, json};
 use sha1::Digest;
 use std::io::Read;
@@ -50,7 +50,7 @@ pub fn convert(
     } else {
         Map::from_iter([("steps".into(), json!({}))])
     };
-    manifest.insert("source".into(), source(disc)?);
+    manifest.insert("source".into(), source(disc, track2)?);
     for &step in only {
         run_step(ctx, disc, track2, step)?;
         record_step(&mut manifest, step, now)?;
@@ -64,15 +64,17 @@ pub fn convert(
 
 /// Converts everything into `ctx.out` (a folder, or a pack: OpenKumite's conversion in the game) and writes the
 /// manifest; the manifest (`now`: when, for the steps' "converted"). Into a `Vfs` whose finished steps (its
-/// checkpoint) begin this run's, an interrupted conversion, those are not done again; else it starts clean.
+/// checkpoint) begin this run's but are not all of them, an interrupted conversion, those are not done again; else it
+/// starts clean (converting again, perhaps from another image: a full one after an ISO).
 pub fn convert_resumable(ctx: &Ctx, disc: &dyn DiscFile, track2: Option<&dyn DiscFile>, now: &str) -> Result<Value> {
     let plan: Vec<&str> = STEPS.iter().map(|s| s.0).collect();
     let earlier = ctx.out.done();
-    let resumes = |d: &Vec<String>| d.len() <= plan.len() && d.iter().zip(&plan).all(|(a, b)| a == b);
+    let resumes = |d: &Vec<String>| d.len() < plan.len() && d.iter().zip(&plan).all(|(a, b)| a == b);
     let mut done = earlier.clone().filter(resumes).unwrap_or_default();
     if done.is_empty() {
         // a clean start: nothing of an earlier conversion stays to be fingerprinted; a pack starts empty
-        let dirs: &[&str] = if earlier.is_some() { &[""] } else { &["characters", "stages", "gamedata"] };
+        let dirs: &[&str] =
+            if earlier.is_some() { &[""] } else { &["characters", "stages", "gamedata", "pictures", "audio", "video"] };
         for dir in dirs {
             ctx.out.remove_all(dir)?;
         }
@@ -83,7 +85,7 @@ pub fn convert_resumable(ctx: &Ctx, disc: &dyn DiscFile, track2: Option<&dyn Dis
         ctx.out.remove_all(path)?;
     }
     let mut manifest = Map::from_iter([("steps".into(), json!({}))]);
-    manifest.insert("source".into(), source(disc)?);
+    manifest.insert("source".into(), source(disc, track2)?);
     for &step in &plan {
         if !done.iter().any(|d| d == step) {
             run_step(ctx, disc, track2, step).context("Tekken 3")?;
@@ -98,12 +100,25 @@ pub fn convert_resumable(ctx: &Ctx, disc: &dyn DiscFile, track2: Option<&dyn Dis
     Ok(manifest)
 }
 
-/// The manifest's "source": the image, identified by its first 16 MB (enough to tell discs apart).
-pub fn source(disc: &dyn DiscFile) -> Result<Value> {
+/// The manifest's "source": the image, identified by its first 16 MB (enough to tell discs apart; the raw sectors,
+/// alike from every format of the same disc), and what the image does not hold ("missing": "movies", "XA music" from
+/// an image of the data alone, "CD audio" without track 2; the game plays without them).
+pub fn source(disc: &dyn DiscFile, track2: Option<&dyn DiscFile>) -> Result<Value> {
     let mut head = Vec::new();
     disc.open()?.take(16 << 20).read_to_end(&mut head).with_context(|| format!("cannot read {}", disc.name()))?;
     let sha: String = sha1::Sha1::digest(&head).iter().map(|b| format!("{b:02x}")).collect();
-    Ok(json!({"file": disc.name(), "sha1_16mb": sha}))
+    let mut missing = Vec::new();
+    if !disc.whole_sectors() {
+        missing.extend(["movies", "XA music"]);
+    }
+    if track2.is_none() {
+        missing.push("CD audio");
+    }
+    let mut v = json!({"file": disc.name(), "sha1_16mb": sha});
+    if !missing.is_empty() {
+        v["missing"] = json!(missing);
+    }
+    Ok(v)
 }
 
 fn find_step(step: &str) -> Result<&'static (&'static str, &'static str, &'static str, Step)> {
@@ -266,7 +281,8 @@ pub fn main(args: &[String]) -> Result<()> {
     } else {
         let [src, out, ..] = args else {
             bail!(
-                "usage: t3_convert \"Tekken_3_(USA)_(Track 1).bin\" OUTDIR [--only characters,stages,...] [--jobs N]\n       \
+                "usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--jobs N]\n       \
+                 (IMAGE: the disc image: .cue, .bin, .iso, .chd, .ccd, .mds, .ecm or .pbp)\n       \
                  t3_convert --fingerprint OUTDIR     (only the manifest's fingerprint, again)"
             )
         };
@@ -274,8 +290,7 @@ pub fn main(args: &[String]) -> Result<()> {
             Some(i) => args.get(i + 1).context("--only needs a list of steps")?.split(',').collect(),
             None => STEPS.iter().map(|s| s.0).collect(),
         };
-        let track2 = StdDisc(src.replace("Track 1", "Track 2").into());
-        let track2 = track2.0.exists().then_some(&track2 as &dyn DiscFile);
+        let (track1, track2) = crate::disc::tracks(src)?;
         // each step's time, from the end of the one before (the library has no clock)
         let start = std::sync::Mutex::new(std::time::Instant::now());
         let log = |line: &str| match start.lock() {
@@ -287,7 +302,7 @@ pub fn main(args: &[String]) -> Result<()> {
         };
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let ctx = Ctx { out: &StdFs(out.into()), log: &log, jobs: jobs_from(args) };
-        (out, convert(&ctx, &StdDisc(src.into()), track2, &only, &now)?)
+        (out, convert(&ctx, &track1, track2.as_ref().map(|t| t as &dyn DiscFile), &only, &now)?)
     };
     let mpath = std::path::Path::new(out).join("manifest.json");
     print_line(&format!("manifest: {} {}", mpath.display(), manifest["fingerprint"].as_str().unwrap_or("")));

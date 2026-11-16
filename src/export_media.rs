@@ -21,7 +21,7 @@ use crate::disc::{BNS_COUNT, BNS_TABLE_OFF, Iso, py_slice, u32le};
 use crate::export_gltf::NAMES;
 use crate::pyjson;
 use anyhow::{Context, Result, bail};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, join, print_line};
 use ok_converter_common::psx::{Pcm, decode_xa, flac, str_to_avi};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -219,12 +219,13 @@ fn export_music(
     iso: &mut Iso,
     xas_lba: u64,
     exe: &[u8],
+    xa: bool,
     track2: Option<&dyn DiscFile>,
     out: &dyn Vfs,
     outdir: &str,
 ) -> Result<Vec<Value>> {
     let mut music = Vec::new();
-    for k in 0..XA_COUNT {
+    for k in (0..XA_COUNT).filter(|_| xa) {
         let at = XA_TABLE + 12 * k;
         if at + 12 > exe.len() {
             bail!("the EXE is too short for its XA table");
@@ -318,10 +319,9 @@ pub fn main(args: &[String]) -> Result<()> {
         bail!("usage: t3_convert export_media \"Tekken_3_(USA)_(Track 1).bin\" OUTDIR [sfx,music,video]")
     };
     let what: Vec<&str> = rest.first().map_or(vec!["sfx", "music", "video"], |w| w.split(',').collect());
-    let track2 = StdDisc(src.replace("Track 1", "Track 2").into());
-    let track2 = track2.0.exists().then_some(&track2 as &dyn DiscFile);
+    let (track1, track2) = crate::disc::tracks(src)?;
     let ctx = Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 };
-    run(&ctx, &StdDisc(src.into()), track2, &what, &|p: &str| p.to_string())
+    run(&ctx, &track1, track2.as_ref().map(|t| t as &dyn DiscFile), &what, &|p: &str| p.to_string())
 }
 
 /// Writes `what` (sfx, music, video) and index.json, each top-level name (sfx, music, video, index.json) at
@@ -358,13 +358,23 @@ pub fn run(
         ctx.log(&format!("sfx banks {} samples {n}", banks.len()));
         index.insert("sfx".into(), Value::Array(banks));
     }
+    // (an image of the data alone, an ISO, has no XA sectors: no streamed music, no movies)
+    let whole = disc.whole_sectors();
+    if !whole {
+        ctx.log(&format!(
+            "{}: an image of the data alone (no Mode 2 Form 2 sectors): no XA music, no movies",
+            disc.name()
+        ));
+    }
     if what.contains(&"music") {
-        let music = export_music(&mut iso, xas_lba as u64, &exe, track2, ctx.out, &place("music"))?;
+        let music = export_music(&mut iso, xas_lba as u64, &exe, whole, track2, ctx.out, &place("music"))?;
         ctx.log(&format!("music tracks {}", music.len()));
         index.insert("music".into(), Value::Array(music));
     }
     if what.contains(&"video") {
-        index.insert("video".into(), Value::Array(export_video(ctx, &mut iso, xas_lba as u64, nsec, &place("video"))?));
+        let video =
+            if whole { export_video(ctx, &mut iso, xas_lba as u64, nsec, &place("video"))? } else { Vec::new() };
+        index.insert("video".into(), Value::Array(video));
     }
     ctx.out.write(&ipath, pyjson::indent1(&Value::Object(index)).as_bytes())
 }

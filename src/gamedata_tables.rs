@@ -3173,7 +3173,7 @@ mod tests {
     #[test]
     fn rules_read_from_the_code() -> Result<()> {
         let Ok(bin) = std::env::var("T3_BIN") else { return Ok(()) };
-        let game = crate::disc::Game::load(&ok_converter_common::io::StdDisc(bin.into()))?;
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
         let (exe, rec) = (Exe::new(&game.exe), &game.rec);
         let (r, a, b, f) = (rules(&exe)?, ai(&exe, rec)?, ball(&exe, rec)?, force(&exe, rec)?);
         assert_eq!(r["moves"]["long_hitstop"]["alias"], 0x898);
@@ -3205,7 +3205,7 @@ mod tests {
     #[test]
     fn screen_places_read_from_the_code() -> Result<()> {
         let Ok(bin) = std::env::var("T3_BIN") else { return Ok(()) };
-        let game = crate::disc::Game::load(&ok_converter_common::io::StdDisc(bin.into()))?;
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
         let (exe, rec) = (Exe::new(&game.exe), &game.rec);
         let s = screens(&exe, rec)?;
         let slash = &s["select"]["faces"]["slash"];

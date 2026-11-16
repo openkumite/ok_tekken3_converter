@@ -20,7 +20,7 @@ use crate::gamedata_tables::{imm, rgb};
 use crate::pyjson;
 use anyhow::{Context, Result, bail};
 use image::RgbaImage;
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, join, print_line};
 use serde_json::{Value, json};
 
 const BASE: i64 = 0x800B8D58;
@@ -147,7 +147,7 @@ fn staff_roll(r: &Exe) -> Result<Vec<Value>> {
 
 pub fn main(args: &[String]) -> Result<()> {
     let [src, out, ..] = args else { bail!("usage: export_theater BIN OUTDIR") };
-    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &StdDisc(src.into()), "")
+    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &crate::disc::track1(src)?, "")
 }
 
 /// Writes `out`/gamedata/theater.json and `out`/pictures/theater/.

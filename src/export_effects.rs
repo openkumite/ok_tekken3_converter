@@ -28,7 +28,7 @@ use crate::pyjson;
 use crate::tim;
 use anyhow::{Context, Result, bail};
 use image::{GenericImage, GrayImage, RgbaImage, imageops};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, Vfs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, join, print_line};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
@@ -55,7 +55,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let out = Path::new(out);
     let root = out.parent().and_then(Path::parent).context("OUTDIR/pictures/effects has no OUTDIR")?;
     let rel = out.strip_prefix(root)?.to_str().context("OUTDIR is not UTF-8")?;
-    run(&Ctx { out: &StdFs(root.into()), log: &print_line, jobs: 1 }, &StdDisc(src.into()), rel)
+    run(&Ctx { out: &StdFs(root.into()), log: &print_line, jobs: 1 }, &crate::disc::track1(src)?, rel)
 }
 
 /// Writes `out` (pictures/effects) from ../cluts.json, ../exe/*_index.png and ../../gamedata/roster.json.

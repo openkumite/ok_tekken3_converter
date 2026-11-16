@@ -24,7 +24,7 @@ use crate::disc::{self, py_slice, u32le};
 use crate::export_gltf::{SCALE, row_name};
 use crate::{pyjson, skel};
 use anyhow::{Context, Result};
-use ok_converter_common::io::{Ctx, DiscFile, StdDisc, StdFs, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, join, print_line};
 use serde_json::{Value, json};
 
 pub const SLOTS: usize = 18;
@@ -121,7 +121,7 @@ pub fn shadows(rec: &[Vec<u8>]) -> Result<Value> {
 
 pub fn main(args: &[String]) -> Result<()> {
     let [src, out, ..] = args else { anyhow::bail!("usage: export_shadows BIN OUTDIR") };
-    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &StdDisc(src.into()), "")
+    run(&Ctx { out: &StdFs(out.into()), log: &print_line, jobs: 1 }, &crate::disc::track1(src)?, "")
 }
 
 /// Writes `out`/gamedata/shadows.json.

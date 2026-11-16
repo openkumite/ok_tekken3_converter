@@ -341,7 +341,7 @@ fn fmt_point(p: Point) -> String {
 
 pub fn main(args: &[String]) -> Result<()> {
     let Some(rec) = args.first() else { bail!("usage: t3_convert attackpath <record> <move-index> [...]") };
-    let game = Game::load(&ok_converter_common::io::StdDisc(disc::bin()))?;
+    let game = Game::load(&disc::track1(disc::bin())?)?;
     let m = Moveset::new(&game, rec.parse().with_context(|| format!("not a record number: {rec}"))?)?;
     for a in &args[1..] {
         let i = parse_int(a)?;

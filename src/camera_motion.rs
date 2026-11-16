@@ -136,7 +136,7 @@ mod tests {
         let (Ok(bin), Ok(dir)) = (std::env::var("T3_BIN"), std::env::var("T3_GAMEDATA")) else {
             return Ok(());
         };
-        let game = crate::disc::Game::load(&ok_converter_common::io::StdDisc(bin.into()))?;
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
         let mut n = 0;
         for id in 0..21 {
             let text = std::fs::read_to_string(format!("{dir}/movesets/moveset_{id:02}.json"))?;
