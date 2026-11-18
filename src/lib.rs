@@ -34,5 +34,6 @@ pub mod skin;
 pub mod t3m;
 pub mod texrender;
 pub mod tim;
+pub mod ttt;
 
 pub type Main = fn(&[String]) -> anyhow::Result<()>;
