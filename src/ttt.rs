@@ -10,6 +10,7 @@
 //! and command lists.
 
 use anyhow::{Context, Result, bail};
+use image::{Rgba, RgbaImage};
 use ok_converter_common::io::{Ctx, Vfs};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1081,11 +1082,202 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
         push(&mut reactions["entries"], e)?;
     }
     write(ctx, "gamedata/movesets/index.json", &index)?;
+    let named = FIGHTERS.map(|(c, body, _)| {
+        (
+            body,
+            c,
+            arr(&d.roster["characters"])
+                .iter()
+                .find(|e| n(&e["id"]) == Some(c))
+                .and_then(|e| e["name"].as_str())
+                .unwrap_or(""),
+        )
+    });
+    front_end(ctx, t3, &mut roster, named)?;
     write(ctx, "gamedata/roster.json", &roster)?;
     write(ctx, "gamedata/rules.json", &rules)?;
     write(ctx, "gamedata/reactions.json", &reactions)?;
+    write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
     ctx.log(&format!("[ttt] {cov:?}"));
     Ok(cov)
+}
+
+/// Tekken Tag's AI data (`ai`) with Tekken 3's for the crossover's fighters, as far as its AI port reads it: their
+/// spacing rows (by body), the handler a CPU takes against them (its aliases in Tekken Tag's numbering), and the
+/// rules naming their move sets (Gon's low fire to dodge, never thrown; Doctor B.'s wake-up forward).
+fn ai(sp: &Space, ai3: &Value, mut ai: Value) -> Result<Value> {
+    let (ms, _) = ids(sp.d);
+    let to_ms = |m: &Value| m.as_u64().and_then(|m| ms.get(&(m as usize))).copied();
+    for &(c, b, id) in &FIGHTERS {
+        if let Some(e) = arr(&ai3["spacing"]["entries"]).iter().find(|e| n(&e["character"]) == Some(c)) {
+            push(&mut ai["spacing"]["entries"], json!({"character": b, "name": e["name"], "values": e["values"]}))?;
+        }
+        let t3_id = arr(&sp.d.roster["selections"]["entries"])
+            .iter()
+            .find(|e| n(&e["character"]) == Some(c))
+            .and_then(|e| n(&e["moveset_id"]));
+        let Some(h) = arr(&ai3["handlers"]["entries"]).iter().find(|h| n(&h["moveset"]) == t3_id) else { continue };
+        for k in ["vs_handler", "self_handler"] {
+            let Some(addr) = h[k].as_str() else { continue };
+            let mut r = ai3["handlers"]["routines"][addr].clone();
+            for list in r["aliases"].as_object_mut().into_iter().flat_map(|m| m.values_mut()) {
+                *list = Value::Array(arr(list).iter().filter_map(n).map(|a| json!(sp.alias(a))).collect());
+            }
+            ai["handlers"]["routines"][addr] = r;
+        }
+        push(
+            &mut ai["handlers"]["entries"],
+            json!({"moveset": id, "vs_handler": h["vs_handler"], "self_handler": h["self_handler"]}),
+        )?;
+    }
+    let (r3, r) = (&ai3["rules"], &mut ai["rules"]);
+    let ours = |m: Option<usize>| m.filter(|m| FIGHTERS.iter().any(|f| f.2 == *m));
+    for k in ["low_fire", "fire", "unthrown"] {
+        if let Some(m) = ours(to_ms(&r3[k]["moveset"])) {
+            r[k]["moveset"] = json!(m);
+            if r3[k].get("descriptor").is_some() {
+                r[k]["descriptor"] = r3[k]["descriptor"].clone();
+            }
+        }
+    }
+    for m in arr(&r3["wake_forward"]["movesets"]).iter().filter_map(|m| ours(to_ms(m))) {
+        push(&mut r["wake_forward"]["movesets"], json!(m))?;
+    }
+    Ok(ai)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The front end: faces, portraits, name plates, the select grid's slots
+
+fn png(fs: &dyn Vfs, path: &str) -> Result<RgbaImage> {
+    Ok(image::load_from_memory_with_format(
+        &fs.read(path).with_context(|| format!("reading {path}"))?,
+        image::ImageFormat::Png,
+    )
+    .with_context(|| format!("decoding {path}"))?
+    .to_rgba8())
+}
+
+/// Tekken 3's portrait of a character (126 x 252) as Tekken Tag's pictures: the select face (52 x 52: the face,
+/// darker and warmer as Tekken Tag's are, on a dark ground in the frame of Tekken Tag's face `frame`) and the portrait (188 x 256:
+/// the top, to the width).
+fn faces(portrait: &RgbaImage, frame: &RgbaImage) -> (RgbaImage, RgbaImage) {
+    use image::imageops::{FilterType, crop_imm, resize};
+    let head = resize(&crop_imm(portrait, 16, 40, 94, 94).to_image(), 48, 48, FilterType::Triangle);
+    let mut face = frame.clone();
+    for (x, y, p) in head.enumerate_pixels() {
+        let tone = |c: u8, k: u32| (c as u32 * k / 100).min(255) as u8;
+        let a = p[3] as u32;
+        let bg = [40, 24, 20];
+        let mix = |c: u8, b: u8| ((c as u32 * a + b as u32 * (255 - a)) / 255) as u8;
+        face.put_pixel(
+            x + 2,
+            y + 2,
+            Rgba([mix(tone(p[0], 85), bg[0]), mix(tone(p[1], 75), bg[1]), mix(tone(p[2], 65), bg[2]), 255]),
+        );
+    }
+    let big = resize(portrait, 188, 376, FilterType::Triangle);
+    (face, crop_imm(&big, 0, 0, 188, 256).to_image())
+}
+
+/// A name plate (128 x 14) in Tekken Tag's big font (`font`: 52 x 42 glyphs in `rows`), right-aligned as its
+/// plates are.
+fn plate(font: &RgbaImage, rows: &[&str], name: &str) -> RgbaImage {
+    use image::imageops::{FilterType, crop_imm, resize};
+    let mut out = RgbaImage::new(128, 14);
+    let glyphs: Vec<RgbaImage> = name
+        .to_uppercase()
+        .chars()
+        .filter_map(|ch| {
+            if ch == ' ' {
+                return Some(RgbaImage::new(17, 14));
+            }
+            let (r, row) = rows.iter().enumerate().find(|r| r.1.contains(ch))?;
+            let col = row.chars().position(|c| c == ch)? as u32;
+            Some(resize(&crop_imm(font, col * 52, r as u32 * 42, 52, 42).to_image(), 17, 14, FilterType::Triangle))
+        })
+        .collect();
+    // (the glyphs' cells are wider than their letters: 12 apart, closer for a long name)
+    let step = (126 / glyphs.len().max(1) as i64).min(12);
+    let mut x = 128 - 17 - step * (glyphs.len() as i64 - 1);
+    for g in glyphs {
+        for (gx, gy, p) in g.enumerate_pixels() {
+            let tx = x + gx as i64;
+            if (0..128).contains(&tx) && p[3] > 0 {
+                out.put_pixel(tx as u32, gy, *p);
+            }
+        }
+        x += step;
+    }
+    out
+}
+
+/// Adds the select grid's slots on the edges beside its bottom row (next to the two hidden ones there, Mokujin's
+/// and Unknown's) for `bodies` (left, right), with their faces, portraits and name plates; selectable from the start.
+fn front_end(ctx: &Ctx, t3: &dyn Vfs, roster: &mut Value, bodies: [(usize, usize, &str); 2]) -> Result<()> {
+    let ttt = ctx.out;
+    let fe = &mut roster["front_end"];
+    let slots = fe["select"]["slots"].as_array_mut().context("roster.json: no select slots")?;
+    // the bottom row's ends (its hidden slots: the leftmost and rightmost)
+    let bottom = slots.iter().filter_map(|s| s["y"].as_i64()).max().context("no slots")?;
+    let row: Vec<(i64, usize)> = slots
+        .iter()
+        .filter(|s| s["y"].as_i64() == Some(bottom))
+        .filter_map(|s| Some((s["x"].as_i64()?, n(&s["slot"])?)))
+        .collect();
+    let (Some(&(lx, left)), Some(&(rx, right))) = (row.iter().min(), row.iter().max()) else { bail!("no bottom row") };
+    let dx = 53;
+    let above = |x: i64| {
+        slots
+            .iter()
+            .find(|s| s["y"].as_i64() == Some(bottom - 54) && s["x"].as_i64() == Some(x))
+            .and_then(|s| n(&s["slot"]))
+    };
+    let (l, r) = (slots.len(), slots.len() + 1);
+    let (up_l, up_r) = (above(lx - dx), above(rx + dx));
+    slots.push(json!({"slot": l, "up": up_l, "down": null, "left": r, "right": left, "x": lx - dx, "y": bottom, "character": bodies[0].0}));
+    slots.push(json!({"slot": r, "up": up_r, "down": null, "left": right, "right": l, "x": rx + dx, "y": bottom, "character": bodies[1].0}));
+    slots[left]["left"] = json!(l);
+    slots[right]["right"] = json!(r);
+    for (up, s) in [(up_l, l), (up_r, r)] {
+        if let Some(u) = up {
+            slots[u]["down"] = json!(s);
+        }
+    }
+    let frame = png(ttt, &format!("pictures/{}", fe["select"]["random_face"].as_str().context("no random face")?))?;
+    let font = png(ttt, &format!("pictures/{}", fe["fonts"]["big"]["picture"].as_str().context("no big font")?))?;
+    let rows: Vec<&str> = arr(&fe["fonts"]["big"]["rows"]).iter().filter_map(|r| r.as_str()).collect();
+    let mut made = Vec::new();
+    for (body, c, name) in bodies {
+        let (face, portrait) = faces(&png(t3, &format!("pictures/portraits/{c:02}.png"))?, &frame);
+        let files = [
+            format!("crossover_face_{body}.png"),
+            format!("crossover_portrait_{body}.png"),
+            format!("crossover_plate_{body}.png"),
+        ];
+        for (f, img) in files.iter().zip([face, portrait, plate(&font, &rows, name)]) {
+            crate::export_pictures::save_png(ttt, &format!("pictures/{f}"), &img)?;
+        }
+        made.push((body, files));
+    }
+    for (body, [face, portrait, plate]) in made {
+        for (list, v) in [("faces", json!(face)), ("portraits", json!(portrait))] {
+            set(&mut fe["select"][list], body, v)?;
+        }
+        set(&mut fe["hud"]["plates"], body, json!({"picture": plate, "x": 30, "streak": 0}))?;
+        push(&mut fe["select"]["selectable"], json!(body))?;
+    }
+    Ok(())
+}
+
+/// Entry `k` of a list (the lists are by body: Tekken Tag's own run past its 34, unused).
+fn set(list: &mut Value, k: usize, v: Value) -> Result<()> {
+    let l = list.as_array_mut().context("not a list")?;
+    while l.len() <= k {
+        l.push(Value::Null);
+    }
+    l[k] = v;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1150,7 +1342,7 @@ mod tests {
                 "{cov:?}"
             );
             let mut files = Vec::new();
-            for dir in ["characters", "gamedata", "gamedata/movesets"] {
+            for dir in ["characters", "gamedata", "gamedata/movesets", "pictures"] {
                 for e in top.list(dir)?.into_iter().filter(|e| !e.is_dir) {
                     files.push((format!("{dir}/{}", e.name), top.read(&format!("{dir}/{}", e.name))?));
                 }
