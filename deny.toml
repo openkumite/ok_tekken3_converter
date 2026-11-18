@@ -3,6 +3,8 @@
 all-features = false
 
 [advisories]
+# chrono is unmaintained, no fix exists; used only for the manifest's local time stamp (convert_all)
+ignore = ["RUSTSEC-2026-0543"]
 
 [licenses]
 # Permissive licenses only (ok_tekken3_converter is MIT).
