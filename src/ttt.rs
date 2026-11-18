@@ -783,8 +783,8 @@ fn moveset(sp: &mut Space, c: usize, id: usize, ids: &Ids, cov: &mut Coverage) -
         // the fight camera's yaw caps: Tekken 3's camera ids 0x27-0x2A are Tekken Tag's 0x13-0x16
         let cam = o["flags24"]["camera_script"].as_u64().unwrap_or(0);
         o["flags24"]["camera_script"] = json!(if (0x27..=0x2A).contains(&cam) { cam - 0x14 } else { 0 });
-        // shortcut: no sounds yet (Tekken 3's sound numbers are not Tekken Tag's)
-        o.insert("sounds".into(), Value::Null);
+        let sounds = move_sounds(&o["sounds"]);
+        o.insert("sounds".into(), sounds);
         moves.push(m);
     }
     let extra = sp.num.values().filter(|&&v| v >= TTT_ALIASES).count();
@@ -1126,6 +1126,9 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     write(ctx, "gamedata/roster.json", &roster)?;
     write(ctx, "gamedata/rules.json", &rules)?;
     write(ctx, "gamedata/reactions.json", &reactions)?;
+    let (sound, audio) = voices(ctx, t3, &d, read(ttt, "gamedata/sound.json")?, read(ttt, "audio/index.json")?)?;
+    write(ctx, "gamedata/sound.json", &sound)?;
+    write(ctx, "audio/index.json", &audio)?;
     write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
     ctx.log(&format!("[ttt] {cov:?}"));
     Ok(cov)
@@ -1173,6 +1176,104 @@ fn ai(sp: &Space, ai3: &Value, mut ai: Value) -> Result<Value> {
         push(&mut r["wake_forward"]["movesets"], json!(m))?;
     }
     Ok(ai)
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The sounds
+
+/// The first sound id of the crossover's voice groups: past Tekken Tag's (to 800) and its arena ids (0x321-0x326).
+const FIRST_VOICE_ID: usize = 0x330;
+
+/// A Tekken 3 move's sound entries in Tekken Tag's: the voices (types 2, 3: the voice row's categories 0, 1 in both
+/// games) as they are, the hit sounds (1, 7) Tekken Tag's generic impact (0x7000: by damage and limb); Tekken 3's
+/// other table sounds and its timed scripts dropped (their numbers are not Tekken Tag's).
+fn move_sounds(sounds: &Value) -> Value {
+    let list: Vec<Value> = arr(sounds)
+        .iter()
+        .filter_map(|e| match e["type"].as_u64()? {
+            t @ (2 | 3) => Some(json!({"type": t, "index": e["index"]})),
+            1 | 7 => Some(json!({"type": 7, "index": 0})),
+            _ => None,
+        })
+        .collect();
+    if list.is_empty() { Value::Null } else { Value::Array(list) }
+}
+
+/// The fighters' voices as Tekken Tag's: each one's Tekken 3 voice row (the selection's `player_1A`) a new voice row,
+/// its samples (Tekken 3's codes resolved in the character's own bank, as the game's SePlay does) a new bank under
+/// audio/sfx/ and a new voice group of ids from [`FIRST_VOICE_ID`], each costume's file on that bank and row. Returns
+/// sound.json and audio/index.json with them added.
+fn voices(ctx: &Ctx, t3: &dyn Vfs, d: &Data, mut sound: Value, mut audio: Value) -> Result<(Value, Value)> {
+    let (s3, a3) = (read(t3, "gamedata/sound.json")?, read(t3, "audio/index.json")?);
+    let mut bank = arr(&audio["sfx"]).iter().filter_map(|b| n(&b["bank"])).max().unwrap_or(0) + 1;
+    let mut id = FIRST_VOICE_ID;
+    for &(c, _, _) in &FIGHTERS {
+        let sels: Vec<&Value> = arr(&d.roster["selections"]["entries"])
+            .iter()
+            .filter(|e| n(&e["character"]) == Some(c) && e["model_record"].is_u64())
+            .collect();
+        let first = sels.first().with_context(|| format!("Tekken 3's character {c}: no model"))?;
+        let row = &s3["voice_rows"]["rows"][n(&first["descriptor"]["player_1A"]).context("no voice row")?];
+        let own = format!("m{:03}", n(&first["model_record"]).unwrap_or(0));
+        let samples: Vec<&Value> = arr(&a3["sfx"]).iter().flat_map(|b| arr(&b["samples"])).collect();
+        let mut files = Vec::new();
+        for code in arr(&row["codes"]).iter().filter_map(|c| c.as_u64()) {
+            // (SePlay: bits 15-14 the bank, 5-4 the program, 3-0 the tone; a bank without tone indices by key range)
+            let key = match code >> 14 {
+                1 => "sys",
+                2 => "ann",
+                _ => own.as_str(),
+            };
+            let (program, tone) = ((code >> 4) & 3, code & 0xF);
+            let tones = |s: &Value| -> Vec<[u64; 4]> {
+                arr(&s["tones"]).iter().map(|t| std::array::from_fn(|k| t[k].as_u64().unwrap_or(u64::MAX))).collect()
+            };
+            let in_bank =
+                || samples.iter().filter(|s| s["file"].as_str().is_some_and(|f| f.starts_with(&format!("{key}/"))));
+            let s = in_bank()
+                .find(|s| tones(s).iter().any(|t| t[0] == program && t[3] == tone))
+                .or_else(|| {
+                    in_bank().find(|s| {
+                        tones(s)
+                            .iter()
+                            .any(|t| t[0] == program && t[3] == u64::MAX && (t[1]..=t[2]).contains(&(tone + 60)))
+                    })
+                })
+                .with_context(|| format!("{own}: no sample for voice code {code:#x}"))?;
+            files.push(*s);
+        }
+        let mut list = Vec::new();
+        let mut group = Vec::new();
+        for (k, s) in files.iter().enumerate() {
+            let file = s["file"].as_str().unwrap_or_default();
+            ctx.out.write(&format!("audio/sfx/{bank:03}/{k:03}.wav"), &t3.read(&format!("audio/sfx/{file}"))?)?;
+            let rate = s["rate"].as_u64().unwrap_or(22050);
+            list.push(
+                json!({"file": format!("{bank:03}/{k:03}.wav"), "rate": rate, "seconds": s["seconds"], "name": file}),
+            );
+            // (played at the WAV's own rate: pitch x 48000 / 4096 = rate)
+            group.push(json!({"pitch": (rate * 4096 + 24000) / 48000, "volume": 25, "channel": 6}));
+        }
+        let (r, count) = (arr(&sound["voice_rows"]["rows"]).len(), files.len());
+        let g = arr(&sound["groups"]["entries"]).len();
+        push(
+            &mut sound["groups"]["entries"],
+            json!({"group": g, "first_id": id, "count": count, "kind": 2, "bank": null, "voice_row": r, "samples": group}),
+        )?;
+        push(
+            &mut sound["voice_rows"]["rows"],
+            json!({"row": r, "counts": row["counts"], "codes": (id..id + count).collect::<Vec<_>>(), "cooldown": 10}),
+        )?;
+        for e in &sels {
+            push(
+                &mut sound["voice_banks"]["characters"],
+                json!({"model_record": e["model_record"], "bank": bank, "voice_row": r}),
+            )?;
+        }
+        push(&mut audio["sfx"], json!({"bank": bank, "samples": list}))?;
+        (bank, id) = (bank + 1, id + count);
+    }
+    Ok((sound, audio))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1371,7 +1472,7 @@ mod tests {
                 "{cov:?}"
             );
             let mut files = Vec::new();
-            for dir in ["characters", "gamedata", "gamedata/movesets", "pictures"] {
+            for dir in ["characters", "gamedata", "gamedata/movesets", "pictures", "audio"] {
                 for e in top.list(dir)?.into_iter().filter(|e| !e.is_dir) {
                     files.push((format!("{dir}/{}", e.name), top.read(&format!("{dir}/{}", e.name))?));
                 }
