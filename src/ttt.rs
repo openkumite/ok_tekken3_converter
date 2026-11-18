@@ -23,8 +23,19 @@ const SHARED: usize = 14;
 /// Tekken Tag's alias count: aliases of the crossover fighters' own moves without a pair are numbered from here.
 const TTT_ALIASES: usize = 5532;
 /// The aliases the engines name, Tekken 3's to Tekken Tag's: the stance, the crouch, the K.O. collapse, the round
-/// starts (held punch, kick, later rounds).
-const FIXED: [(usize, usize); 6] = [(3, 58), (0x28, 80), (0xD66, 4769), (0, 4), (2, 6), (1, 5)];
+/// starts (held punch, kick, later rounds), the win poses (rules.json `win_lose_motions`, rounds.json `win_poses`).
+const FIXED: [(usize, usize); 10] = [
+    (3, 58),
+    (0x28, 80),
+    (0xD66, 4769),
+    (0, 4),
+    (2, 6),
+    (1, 5),
+    (3431, 4770),
+    (3432, 4771),
+    (3433, 4772),
+    (3434, 4773),
+];
 /// The air reactions by meaning, Tekken 3's entry to Tekken Tag's (0x8001A630 / 0x500678): a juggle hit, a spike,
 /// the late fall, the side hits, the cancel-driven one; Tekken Tag's own spike and fall variants (7, 5, 6) take the
 /// same.
@@ -936,8 +947,9 @@ fn command(sp: &Space, c: &Value, ids: &Ids, cov: &mut Coverage) -> Value {
 }
 
 /// The Tekken Tag motions a crossover fighter plays from its opponents' sets (Tekken Tag's own fighters list
-/// theirs): what every Tekken Tag fighter's throws and reactions start on the victim, and the moves they go on to.
-fn motions(d: &Data, aliases: &BTreeMap<String, Vec<Option<usize>>>) -> Vec<String> {
+/// theirs): what every Tekken Tag fighter's throws and reactions start on the victim, the aliases its own moves go to
+/// that it lacks (`lacked`), and the moves they go on to.
+fn motions(d: &Data, aliases: &BTreeMap<String, Vec<Option<usize>>>, lacked: &BTreeSet<usize>) -> Vec<String> {
     let links: BTreeSet<usize> = arr(&d.cancels["cancels"]["entries"])
         .iter()
         .chain(arr(&d.cancels["shared_cancels"]["entries"]))
@@ -956,6 +968,7 @@ fn motions(d: &Data, aliases: &BTreeMap<String, Vec<Option<usize>>>) -> Vec<Stri
             .collect();
         todo.extend(reactions.iter().flat_map(|e| arr(&e["victims"]).iter().filter_map(n)));
         todo.extend(arr(&d.ttt_reactions["air_reactions"]["entries"]).iter().filter_map(|e| n(&e["alias"])));
+        todo.extend(lacked);
         let mut seen = BTreeSet::new();
         while let Some(a) = todo.pop() {
             if a == 0 || !seen.insert(a) {
@@ -966,6 +979,8 @@ fn motions(d: &Data, aliases: &BTreeMap<String, Vec<Option<usize>>>) -> Vec<Stri
                 out.insert(format!("{anim}.glb"));
             }
             todo.extend(n(&m["next"]["alias"]));
+            // (and its END: the moves it goes on to without an input)
+            todo.extend(d.ttt_cancels(m).iter().filter(|c| c["kind"] == "end").filter_map(|c| n(&c["dest"])));
         }
     }
     out.into_iter().collect()
@@ -1023,10 +1038,24 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     let (mut index, mut roster) = (d.index.clone(), d.ttt_roster.clone());
     let mut rules = read(ttt, "gamedata/rules.json")?;
     let rules3 = read(t3, "gamedata/rules.json")?;
-    let list = json!(motions(&d, &aliases));
-    for &(c, body, id) in &FIGHTERS {
+    let mut sets = Vec::new();
+    for &(c, body, _) in &FIGHTERS {
         ctx.log(&format!("[ttt] Tekken 3's character {c} as body {body}"));
-        let set = moveset(&mut sp, c, id, &ids, &mut cov)?;
+        sets.push(moveset(&mut sp, c, FIGHTERS.iter().find(|f| f.0 == c).map_or(0, |f| f.2), &ids, &mut cov)?);
+    }
+    // the Tekken Tag aliases their moves go to that they lack: the opponent's, its motions listed
+    let mut lacked = BTreeSet::new();
+    for set in &sets {
+        let refs = arr(&set["moves"])
+            .iter()
+            .map(|m| &m["next"]["alias"])
+            .chain(arr(&set["cancels"]).iter().map(|c| &c["dest"]));
+        lacked.extend(refs.filter_map(n).filter(|&a| a < TTT_ALIASES && set["aliases"][a]["move"].is_null()));
+    }
+    let list = motions(&d, &aliases, &lacked);
+    ctx.log(&format!("[ttt] {} Tekken Tag motions", list.len()));
+    let list = json!(list);
+    for (&(c, body, id), set) in FIGHTERS.iter().zip(sets) {
         let file = format!("moveset_{id:02}.json");
         write(ctx, &format!("gamedata/movesets/{file}"), &set)?;
         write(ctx, &format!("gamedata/movesets/motions_{id:02}.json"), &json!({"moveset_id": id, "motions": list}))?;
