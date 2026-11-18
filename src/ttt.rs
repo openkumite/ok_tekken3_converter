@@ -2,7 +2,7 @@
 //! Doctor B. as Tekken Tag fighters. Their Tekken 3 move system is kept and renumbered into Tekken Tag's aliases;
 //! their bodies and motions are turned onto Tekken Tag's joint axes. Reads Tekken 3's game root (this converter's
 //! output) and Tekken Tag's (ok_tekken_tag_converter's, through `ctx.out`: the extras over it), writes the files
-//! that add the two to Tekken Tag into `ctx.out`.
+//! that add the two to Tekken Tag into `ctx.out`. Also Tekken Ball's rules, court and sounds ([`ball`]).
 //!
 //! Tekken 3's aliases and Tekken Tag's are numbered apart: they are paired on the 14 fighters both games have
 //! ([`pairing`]): their attacks by (frames, hit mask, active frames) when unique on both sides, the reactions those
@@ -1126,7 +1126,9 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     write(ctx, "gamedata/roster.json", &roster)?;
     write(ctx, "gamedata/rules.json", &rules)?;
     write(ctx, "gamedata/reactions.json", &reactions)?;
-    let (sound, audio) = voices(ctx, t3, &d, read(ttt, "gamedata/sound.json")?, read(ttt, "audio/index.json")?)?;
+    let (mut sound, mut audio) =
+        voices(ctx, t3, &d, read(ttt, "gamedata/sound.json")?, read(ttt, "audio/index.json")?)?;
+    ball(ctx, t3, &sp, &ids, &mut sound, &mut audio)?;
     write(ctx, "gamedata/sound.json", &sound)?;
     write(ctx, "audio/index.json", &audio)?;
     write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
@@ -1199,6 +1201,30 @@ fn move_sounds(sounds: &Value) -> Value {
     if list.is_empty() { Value::Null } else { Value::Array(list) }
 }
 
+/// The sample a Tekken 3 SePlay code plays (`own`: the character's bank), as the game's SePlay finds it.
+fn sample<'a>(samples: &[&'a Value], code: u64, own: &str) -> Result<&'a Value> {
+    // (SePlay: bits 15-14 the bank, 5-4 the program, 3-0 the tone; a bank without tone indices by key range)
+    let key = match code >> 14 {
+        1 => "sys",
+        2 => "ann",
+        _ => own,
+    };
+    let (program, tone) = ((code >> 4) & 3, code & 0xF);
+    let tones = |s: &Value| -> Vec<[u64; 4]> {
+        arr(&s["tones"]).iter().map(|t| std::array::from_fn(|k| t[k].as_u64().unwrap_or(u64::MAX))).collect()
+    };
+    let in_bank = || samples.iter().filter(|s| s["file"].as_str().is_some_and(|f| f.starts_with(&format!("{key}/"))));
+    in_bank()
+        .find(|s| tones(s).iter().any(|t| t[0] == program && t[3] == tone))
+        .or_else(|| {
+            in_bank().find(|s| {
+                tones(s).iter().any(|t| t[0] == program && t[3] == u64::MAX && (t[1]..=t[2]).contains(&(tone + 60)))
+            })
+        })
+        .copied()
+        .with_context(|| format!("{own}: no sample for sound code {code:#x}"))
+}
+
 /// The fighters' voices as Tekken Tag's: each one's Tekken 3 voice row (the selection's `player_1A`) a new voice row,
 /// its samples (Tekken 3's codes resolved in the character's own bank, as the game's SePlay does) a new bank under
 /// audio/sfx/ and a new voice group of ids from [`FIRST_VOICE_ID`], each costume's file on that bank and row. Returns
@@ -1218,29 +1244,7 @@ fn voices(ctx: &Ctx, t3: &dyn Vfs, d: &Data, mut sound: Value, mut audio: Value)
         let samples: Vec<&Value> = arr(&a3["sfx"]).iter().flat_map(|b| arr(&b["samples"])).collect();
         let mut files = Vec::new();
         for code in arr(&row["codes"]).iter().filter_map(|c| c.as_u64()) {
-            // (SePlay: bits 15-14 the bank, 5-4 the program, 3-0 the tone; a bank without tone indices by key range)
-            let key = match code >> 14 {
-                1 => "sys",
-                2 => "ann",
-                _ => own.as_str(),
-            };
-            let (program, tone) = ((code >> 4) & 3, code & 0xF);
-            let tones = |s: &Value| -> Vec<[u64; 4]> {
-                arr(&s["tones"]).iter().map(|t| std::array::from_fn(|k| t[k].as_u64().unwrap_or(u64::MAX))).collect()
-            };
-            let in_bank =
-                || samples.iter().filter(|s| s["file"].as_str().is_some_and(|f| f.starts_with(&format!("{key}/"))));
-            let s = in_bank()
-                .find(|s| tones(s).iter().any(|t| t[0] == program && t[3] == tone))
-                .or_else(|| {
-                    in_bank().find(|s| {
-                        tones(s)
-                            .iter()
-                            .any(|t| t[0] == program && t[3] == u64::MAX && (t[1]..=t[2]).contains(&(tone + 60)))
-                    })
-                })
-                .with_context(|| format!("{own}: no sample for voice code {code:#x}"))?;
-            files.push(*s);
+            files.push(sample(&samples, code, &own)?);
         }
         let mut list = Vec::new();
         let mut group = Vec::new();
@@ -1274,6 +1278,90 @@ fn voices(ctx: &Ctx, t3: &dyn Vfs, d: &Data, mut sound: Value, mut audio: Value)
         (bank, id) = (bank + 1, id + count);
     }
     Ok((sound, audio))
+}
+
+/// The back steps Ball pushes back, Tekken 3's aliases to Tekken Tag's (the same moves: a back dash, then the back
+/// walk or the stance; the pairing leaves them, their frames differ).
+const BACK_STEPS: [(usize, usize); 4] = [(30, 70), (31, 71), (32, 72), (33, 73)];
+/// Tekken 3's Ball court in Tekken Tag: its arena id, past Tekken Tag's 23 (0-22).
+pub const BALL_STAGE: usize = 23;
+
+/// Tekken 3's Ball under Tekken Tag (OpenKumite's mode there): Tekken 3's ball.json with its numbers Tekken Tag's,
+/// written with the court (Tekken 3's beach, as arena [`BALL_STAGE`]) and the Ball sounds (Tekken 3's samples: a new
+/// bank and a group of new ids in `sound` / `audio`). Renumbered: the moves pushed back (aliases, as the pairing has
+/// them), the self-charging move set and its exception, the CPU's pool (bodies; a character Tekken Tag lacks is
+/// left out). A move's ball power needs no table: Tekken 3 takes it from the move's damage and hit mask (0x80047D98),
+/// which Tekken Tag's moves carry in the same form. Nothing without Tekken 3's ball.json.
+fn ball(ctx: &Ctx, t3: &dyn Vfs, sp: &Space, ids: &Ids, sound: &mut Value, audio: &mut Value) -> Result<()> {
+    if !t3.exists("gamedata/ball.json") {
+        return Ok(());
+    }
+    let mut b = read(t3, "gamedata/ball.json")?;
+    let c = &mut b["constants"];
+    // (an alias in Gon's and Doctor B.'s numbering, else the pairing's)
+    let alias = |a: &Value| n(a).and_then(|a| sp.num.get(&a).or(sp.p.alias.get(&a)).copied());
+    // each pushed alias in both: Gon's and Doctor B.'s, and Tekken Tag's fighters' (the pairing's, else BACK_STEPS)
+    for p in c["moves"]["push_back"].as_array_mut().context("ball.json: push_back")? {
+        let mut to: BTreeSet<usize> = BTreeSet::new();
+        for a in arr(&p["aliases"]).iter().filter_map(n) {
+            to.extend(sp.num.get(&a));
+            to.extend(sp.p.alias.get(&a).or(BACK_STEPS.iter().find(|s| s.0 == a).map(|s| &s.1)));
+        }
+        p["aliases"] = json!(to);
+    }
+    let charge = &mut c["moves"]["self_charge"];
+    let (set, except) = (n(&charge["moveset"]).and_then(|m| ids.0.get(&m)).copied(), alias(&charge["except_alias"]));
+    (charge["moveset"], charge["except_alias"]) = (json!(set), json!(except));
+    let pool: Vec<usize> = arr(&c["cpu"]["pool"]).iter().filter_map(|k| ids.1.get(&n(k)?).copied()).collect();
+    c["cpu"]["pool"] = json!(pool);
+    c["cpu"]["first_ever"] = json!(n(&c["cpu"]["first_ever"]).and_then(|k| ids.1.get(&k)));
+    let court = n(&c["stage"]).context("ball.json: no stage")?;
+    c["stage"] = json!(BALL_STAGE);
+    ctx.out.write(&format!("stages/stage_{BALL_STAGE:02}.glb"), &t3.read(&format!("stages/stage_{court:02}.glb"))?)?;
+    // the sounds: each code once, the new ids from past the last group's
+    let a3 = read(t3, "audio/index.json")?;
+    let samples: Vec<&Value> = arr(&a3["sfx"]).iter().flat_map(|b| arr(&b["samples"])).collect();
+    let bank = arr(&audio["sfx"]).iter().filter_map(|b| n(&b["bank"])).max().unwrap_or(0) + 1;
+    let groups = arr(&sound["groups"]["entries"]);
+    let first = groups.iter().filter_map(|g| Some(n(&g["first_id"])? + n(&g["count"])?)).max().unwrap_or(0);
+    let g = groups.len();
+    let mut codes: Vec<u64> = Vec::new();
+    let mut renumber = |v: &mut Value| {
+        let Some(code) = v.as_u64() else { return };
+        let k = codes.iter().position(|&x| x == code).unwrap_or_else(|| {
+            codes.push(code);
+            codes.len() - 1
+        });
+        *v = json!(first + k);
+    };
+    for v in c["sounds"].as_object_mut().context("ball.json: sounds")?.values_mut() {
+        match v.as_array_mut() {
+            Some(list) => list.iter_mut().for_each(&mut renumber),
+            None => renumber(v),
+        }
+    }
+    let (mut list, mut group) = (Vec::new(), Vec::new());
+    for (k, &code) in codes.iter().enumerate() {
+        let s = sample(&samples, code, "sys")?;
+        let file = s["file"].as_str().unwrap_or_default();
+        ctx.out.write(&format!("audio/sfx/{bank:03}/{k:03}.wav"), &t3.read(&format!("audio/sfx/{file}"))?)?;
+        let rate = s["rate"].as_u64().unwrap_or(22050);
+        list.push(
+            json!({"file": format!("{bank:03}/{k:03}.wav"), "rate": rate, "seconds": s["seconds"], "name": file}),
+        );
+        group.push(json!({"pitch": (rate * 4096 + 24000) / 48000, "volume": 25, "channel": 6}));
+    }
+    push(
+        &mut sound["groups"]["entries"],
+        json!({"group": g, "first_id": first, "count": codes.len(), "kind": 0, "bank": bank, "voice_row": null, "samples": group}),
+    )?;
+    push(&mut audio["sfx"], json!({"bank": bank, "samples": list}))?;
+    ctx.log(&format!(
+        "[ttt] Ball: {}, self charge {set:?} / {except:?}, {} sounds",
+        b["constants"]["moves"]["push_back"],
+        codes.len()
+    ));
+    write(ctx, "gamedata/ball.json", &b)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1471,6 +1559,17 @@ mod tests {
                     && cov.dealt.iter().all(|&(all, paired)| paired * 2 > all),
                 "{cov:?}"
             );
+            // Ball: the back dash pushed in Tekken Tag's alias too, the court, the serve's sound a new group's id
+            let ball = read(&top, "gamedata/ball.json")?;
+            let c = &ball["constants"];
+            assert!(
+                arr(&c["moves"]["push_back"][1]["aliases"]).contains(&json!(70)) && c["stage"] == BALL_STAGE,
+                "{c}"
+            );
+            let serve = n(&c["sounds"]["serve"]).context("no serve")?;
+            let sound = read(&top, "gamedata/sound.json")?;
+            let g = arr(&sound["groups"]["entries"]).last().context("no groups")?;
+            assert!(n(&g["first_id"]) == Some(serve) && top.exists(&format!("stages/stage_{BALL_STAGE:02}.glb")));
             let mut files = Vec::new();
             for dir in ["characters", "gamedata", "gamedata/movesets", "pictures", "audio"] {
                 for e in top.list(dir)?.into_iter().filter(|e| !e.is_dir) {
