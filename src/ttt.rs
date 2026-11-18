@@ -1,8 +1,10 @@
 //! Tekken 3's fighters in Tekken Tag Tournament (OpenKumite's crossover, installed into Tekken Tag's extras): Gon and
-//! Doctor B. as Tekken Tag fighters. Their Tekken 3 move system is kept and renumbered into Tekken Tag's aliases;
-//! their bodies and motions are turned onto Tekken Tag's joint axes. Reads Tekken 3's game root (this converter's
-//! output) and Tekken Tag's (ok_tekken_tag_converter's, through `ctx.out`: the extras over it), writes the files
-//! that add the two to Tekken Tag into `ctx.out`. Also Tekken Ball's rules, court and sounds ([`ball`]).
+//! Doctor B. as Tekken Tag fighters, Crow (Tekken Force's soldiers) as one in no select. Their Tekken 3 move system
+//! is kept and renumbered into Tekken Tag's aliases; their bodies and motions are turned onto Tekken Tag's joint
+//! axes. Reads Tekken 3's game root (this converter's output) and Tekken Tag's (ok_tekken_tag_converter's, through
+//! `ctx.out`: the extras over it), writes the files that add them to Tekken Tag into `ctx.out`. Also Tekken Ball's
+//! rules, court and sounds ([`ball`]) and Tekken Force's stages, soldiers, bosses, pictures, music and sounds
+//! ([`force`]).
 //!
 //! Tekken 3's aliases and Tekken Tag's are numbered apart: they are paired on the 14 fighters both games have
 //! ([`pairing`]): their attacks by (frames, hit mask, active frames) when unique on both sides, the reactions those
@@ -16,8 +18,10 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Tekken 3's character ids, and the body and moveset ids they take in Tekken Tag (past its 34 bodies and 32
-/// movesets).
-pub const FIGHTERS: [(usize, usize, usize); 2] = [(17, 34, 32), (19, 35, 33)];
+/// movesets): Gon and Doctor B. (selectable), Crow (Tekken Force's soldiers: in no select).
+pub const FIGHTERS: [(usize, usize, usize); 3] = [(17, 34, 32), (19, 35, 33), (21, 36, 34)];
+/// The first [`FIGHTERS`] are on the select screen.
+const SELECTABLE: usize = 2;
 /// The fighters both games have: Tekken 3's characters (and Tekken Tag's bodies) 0-13.
 const SHARED: usize = 14;
 /// Tekken Tag's alias count: aliases of the crossover fighters' own moves without a pair are numbered from here.
@@ -1090,8 +1094,10 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
         push(&mut index["fighters"], json!({"name": name, "body": body, "moveset_id": id, "moveset_file": file}))?;
         push(&mut index["files"], json!(file))?;
         push(&mut roster["characters"], json!({"id": body, "name": name, "moveset_id": id, "selections": selections}))?;
-        let slot = arr(&roster["select_grid"]["entries"]).len();
-        push(&mut roster["select_grid"]["entries"], json!({"slot": slot, "character": body, "name": name}))?;
+        if FIGHTERS[..SELECTABLE].iter().any(|f| f.0 == c) {
+            let slot = arr(&roster["select_grid"]["entries"]).len();
+            push(&mut roster["select_grid"]["entries"], json!({"slot": slot, "character": body, "name": name}))?;
+        }
         // the hurt and push spheres' radii (both games' layouts are the same); the health (Tekken 3 has one for all)
         for k in ["hurt_spheres", "push_spheres"] {
             let radii = arr(&rules3[k]["per_character"])
@@ -1111,7 +1117,7 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
         push(&mut reactions["entries"], e)?;
     }
     write(ctx, "gamedata/movesets/index.json", &index)?;
-    let named = FIGHTERS.map(|(c, body, _)| {
+    let named = [FIGHTERS[0], FIGHTERS[1]].map(|(c, body, _)| {
         (
             body,
             c,
@@ -1129,6 +1135,7 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     let (mut sound, mut audio) =
         voices(ctx, t3, &d, read(ttt, "gamedata/sound.json")?, read(ttt, "audio/index.json")?)?;
     ball(ctx, t3, &sp, &ids, &mut sound, &mut audio)?;
+    force(ctx, t3, &d, &ids, &mut sound, &mut audio)?;
     write(ctx, "gamedata/sound.json", &sound)?;
     write(ctx, "audio/index.json", &audio)?;
     write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
@@ -1246,6 +1253,10 @@ fn voices(ctx: &Ctx, t3: &dyn Vfs, d: &Data, mut sound: Value, mut audio: Value)
         for code in arr(&row["codes"]).iter().filter_map(|c| c.as_u64()) {
             files.push(sample(&samples, code, &own)?);
         }
+        // (Crow's soldiers have no voice)
+        if files.is_empty() {
+            continue;
+        }
         let mut list = Vec::new();
         let mut group = Vec::new();
         for (k, s) in files.iter().enumerate() {
@@ -1318,28 +1329,143 @@ fn ball(ctx: &Ctx, t3: &dyn Vfs, sp: &Space, ids: &Ids, sound: &mut Value, audio
     let court = n(&c["stage"]).context("ball.json: no stage")?;
     c["stage"] = json!(BALL_STAGE);
     ctx.out.write(&format!("stages/stage_{BALL_STAGE:02}.glb"), &t3.read(&format!("stages/stage_{court:02}.glb"))?)?;
-    // the sounds: each code once, the new ids from past the last group's
+    // the sounds: each code once, as new ids
+    let codes = codes_in(c["sounds"].as_object().context("ball.json: sounds")?.values());
+    let first = sound_group(ctx, t3, &codes, sound, audio)?;
+    c["sounds"].as_object_mut().into_iter().flat_map(|m| m.values_mut()).for_each(|v| renumber(v, &codes, first));
+    ctx.log(&format!(
+        "[ttt] Ball: {}, self charge {set:?} / {except:?}, {} sounds",
+        b["constants"]["moves"]["push_back"],
+        codes.len()
+    ));
+    write(ctx, "gamedata/ball.json", &b)
+}
+
+/// Tekken Force's stages in Tekken Tag: arena ids past Ball's court (Tekken 3's 15-18 as 24-27).
+pub const FORCE_STAGE: usize = 24;
+/// force.json's sounds (SePlay codes): the chicken's, the countdown voices, the tally's.
+const FORCE_SOUNDS: [&str; 5] = ["/chicken/sfx", "/chicken/voice", "/countdown/codes", "/tally/sfx", "/tally/key_sfx"];
+
+/// Tekken 3's Tekken Force under Tekken Tag (OpenKumite's mode there): Tekken 3's force.json with its numbers Tekken
+/// Tag's, written with its stages (as arenas from [`FORCE_STAGE`]; their lights, which the blob shadows' colour is
+/// part of, in a stages.json of their own), the chickens' pictures, the final stage's music (a new BGM id) and its
+/// sounds (a group of new ids in `sound` / `audio`). Renumbered: the soldiers' selection (Crow's: a crossover
+/// fighter), the bosses and the final character (Tekken Tag's bodies of the same name), the boss routes by Tekken
+/// Tag's selection (body x 8 + costume; a fighter without a Tekken 3 namesake takes the route of Tekken 3's
+/// character body % 14). Nothing without Tekken 3's force.json.
+fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio: &mut Value) -> Result<()> {
+    if !t3.exists("gamedata/force.json") {
+        return Ok(());
+    }
+    let mut f = read(t3, "gamedata/force.json")?;
+    let body = |c: Option<usize>| c.and_then(|c| ids.1.get(&c)).copied();
+    // the stages
+    let mut olds: Vec<usize> = arr(&f["stages"]).iter().filter_map(|s| n(&s["stage"])).collect();
+    olds.sort_unstable();
+    olds.dedup();
+    let to = |s: Option<usize>| s.and_then(|s| olds.iter().position(|&o| o == s)).map(|k| FORCE_STAGE + k);
+    let stages3 = read(t3, "gamedata/stages.json")?;
+    let mut lit = Vec::new();
+    for (k, &old) in olds.iter().enumerate() {
+        let id = FORCE_STAGE + k;
+        ctx.out.write(&format!("stages/stage_{id:02}.glb"), &t3.read(&format!("stages/stage_{old:02}.glb"))?)?;
+        if let Some(e) = arr(&stages3["stages"]).iter().find(|e| n(&e["id"]) == Some(old)) {
+            lit.push(json!({"id": id, "name": e["name"], "light": e["light"]}));
+        }
+    }
+    write(ctx, "gamedata/stages.json", &json!({"stages": lit}))?;
+    for s in f["stages"].as_array_mut().context("force.json: stages")? {
+        s["stage"] = json!(to(n(&s["stage"])));
+    }
+    let slanted = &mut f["constants"]["bounds"]["slanted_stage"];
+    *slanted = json!(to(n(slanted)));
+    // the soldiers, the bosses
+    let base = n(&f["soldier_selection_base"]);
+    let e = arr(&d.roster["selections"]["entries"])
+        .iter()
+        .find(|e| n(&e["selection"]) == base)
+        .context("force.json: no soldier selection")?;
+    let soldier = body(n(&e["character"])).context("the soldiers: not installed")? * 8 + n(&e["costume"]).unwrap_or(0);
+    f["soldier_selection_base"] = json!(soldier);
+    let t3_of: BTreeMap<usize, usize> = ids.1.iter().map(|(&c, &b)| (b, c)).collect();
+    let routes = &f["boss_routes"];
+    let route = |r: &Value| -> Value { arr(r).iter().map(|b| json!([body(n(&b[0])).unwrap_or(0), b[1]])).collect() };
+    let bodies = t3_of.keys().max().map_or(0, |b| b + 1);
+    let by_selection: Vec<Value> = (0..bodies * 8)
+        .map(|s| {
+            let c = t3_of.get(&(s / 8)).copied().unwrap_or(s / 8 % SHARED);
+            route(&routes["by_selection"][c * 4 + s % 4])
+        })
+        .collect();
+    let otherwise = json!([body(n(&routes["default"][0])).unwrap_or(0), routes["default"][1]]);
+    (f["boss_routes"]["by_selection"], f["boss_routes"]["default"]) = (json!(by_selection), otherwise);
+    let last = &mut f["constants"]["final"]["character"];
+    *last = json!(body(n(last)).context("force.json: the final character is not installed")?);
+    // the final stage's music: Tekken 3's track as a new BGM
+    let mut music = read(ctx.out, "gamedata/music.json")?;
+    let bgm = n(&f["constants"]["final"]["bgm"]).context("force.json: no final bgm")?;
+    let col = read(t3, "gamedata/music.json")?["bgm"][bgm]["columns"][0].clone();
+    let file = col["file"].as_str().context("music.json: the final bgm has no file")?;
+    ctx.out.write(&format!("audio/music/t3_{file}"), &t3.read(&format!("audio/music/{file}"))?)?;
+    let id = arr(&music["bgm"]).len();
+    push(
+        &mut music["bgm"],
+        json!({"id": id, "columns": [{"kind": 1, "file": format!("t3_{file}"), "loop": col["loop"]}], "characters": []}),
+    )?;
+    f["constants"]["final"]["bgm"] = json!(id);
+    write(ctx, "gamedata/music.json", &music)?;
+    // the sounds, the chickens' pictures
+    let c = &mut f["constants"];
+    let codes = codes_in(FORCE_SOUNDS.iter().filter_map(|p| c.pointer(p)));
+    let first = sound_group(ctx, t3, &codes, sound, audio)?;
+    for p in FORCE_SOUNDS {
+        if let Some(v) = c.pointer_mut(p) {
+            renumber(v, &codes, first);
+        }
+    }
+    for e in t3.list("pictures/force")?.into_iter().filter(|e| !e.is_dir) {
+        ctx.out.write(&format!("pictures/force/{}", e.name), &t3.read(&format!("pictures/force/{}", e.name))?)?;
+    }
+    ctx.log(&format!(
+        "[ttt] Force: stages {olds:?} from {FORCE_STAGE}, soldiers {soldier}, final bgm {id}, {} sounds",
+        codes.len()
+    ));
+    write(ctx, "gamedata/force.json", &f)
+}
+
+/// Each SePlay code in `vals` (numbers and lists of them) once, in order.
+fn codes_in<'a>(vals: impl Iterator<Item = &'a Value>) -> Vec<u64> {
+    let mut codes = Vec::new();
+    for v in vals.flat_map(|v| v.as_array().map_or_else(|| vec![v], |l| l.iter().collect())) {
+        if let Some(code) = v.as_u64().filter(|c| !codes.contains(c)) {
+            codes.push(code);
+        }
+    }
+    codes
+}
+
+/// The codes in `v` (a number or a list of them) as their new ids: `first` + their place in `codes`.
+fn renumber(v: &mut Value, codes: &[u64], first: usize) {
+    let one = |x: &mut Value| {
+        if let Some(k) = x.as_u64().and_then(|code| codes.iter().position(|&c| c == code)) {
+            *x = json!(first + k);
+        }
+    };
+    match v.as_array_mut() {
+        Some(list) => list.iter_mut().for_each(one),
+        None => one(v),
+    }
+}
+
+/// Tekken 3's system sounds `codes` (SePlay codes) as a group of new Tekken Tag ids, from past the last group's, on
+/// a bank of their samples: added to `sound` / `audio`. Returns the first id (code k plays as first + k).
+fn sound_group(ctx: &Ctx, t3: &dyn Vfs, codes: &[u64], sound: &mut Value, audio: &mut Value) -> Result<usize> {
     let a3 = read(t3, "audio/index.json")?;
     let samples: Vec<&Value> = arr(&a3["sfx"]).iter().flat_map(|b| arr(&b["samples"])).collect();
     let bank = arr(&audio["sfx"]).iter().filter_map(|b| n(&b["bank"])).max().unwrap_or(0) + 1;
     let groups = arr(&sound["groups"]["entries"]);
     let first = groups.iter().filter_map(|g| Some(n(&g["first_id"])? + n(&g["count"])?)).max().unwrap_or(0);
     let g = groups.len();
-    let mut codes: Vec<u64> = Vec::new();
-    let mut renumber = |v: &mut Value| {
-        let Some(code) = v.as_u64() else { return };
-        let k = codes.iter().position(|&x| x == code).unwrap_or_else(|| {
-            codes.push(code);
-            codes.len() - 1
-        });
-        *v = json!(first + k);
-    };
-    for v in c["sounds"].as_object_mut().context("ball.json: sounds")?.values_mut() {
-        match v.as_array_mut() {
-            Some(list) => list.iter_mut().for_each(&mut renumber),
-            None => renumber(v),
-        }
-    }
     let (mut list, mut group) = (Vec::new(), Vec::new());
     for (k, &code) in codes.iter().enumerate() {
         let s = sample(&samples, code, "sys")?;
@@ -1356,12 +1482,7 @@ fn ball(ctx: &Ctx, t3: &dyn Vfs, sp: &Space, ids: &Ids, sound: &mut Value, audio
         json!({"group": g, "first_id": first, "count": codes.len(), "kind": 0, "bank": bank, "voice_row": null, "samples": group}),
     )?;
     push(&mut audio["sfx"], json!({"bank": bank, "samples": list}))?;
-    ctx.log(&format!(
-        "[ttt] Ball: {}, self charge {set:?} / {except:?}, {} sounds",
-        b["constants"]["moves"]["push_back"],
-        codes.len()
-    ));
-    write(ctx, "gamedata/ball.json", &b)
+    Ok(first)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1568,8 +1689,23 @@ mod tests {
             );
             let serve = n(&c["sounds"]["serve"]).context("no serve")?;
             let sound = read(&top, "gamedata/sound.json")?;
-            let g = arr(&sound["groups"]["entries"]).last().context("no groups")?;
-            assert!(n(&g["first_id"]) == Some(serve) && top.exists(&format!("stages/stage_{BALL_STAGE:02}.glb")));
+            let groups = arr(&sound["groups"]["entries"]);
+            assert!(
+                groups.iter().any(|g| n(&g["first_id"]) == Some(serve))
+                    && top.exists(&format!("stages/stage_{BALL_STAGE:02}.glb"))
+            );
+            // Force: the soldiers Crow's (body 36), its stages from 24, the final character Doctor B., a countdown
+            // voice the last group's id
+            let f = read(&top, "gamedata/force.json")?;
+            let c = &f["constants"];
+            assert!(
+                f["soldier_selection_base"] == 36 * 8
+                    && f["stages"][0]["stage"] == FORCE_STAGE
+                    && c["final"]["character"] == 35
+                    && top.exists(&format!("stages/stage_{:02}.glb", FORCE_STAGE + 3))
+                    && n(&groups.last().context("no groups")?["first_id"]) <= n(&c["countdown"]["codes"][0]),
+                "{c}"
+            );
             let mut files = Vec::new();
             for dir in ["characters", "gamedata", "gamedata/movesets", "pictures", "audio"] {
                 for e in top.list(dir)?.into_iter().filter(|e| !e.is_dir) {
