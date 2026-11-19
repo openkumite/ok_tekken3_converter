@@ -3,8 +3,8 @@
 //! is kept and renumbered into Tekken Tag's aliases; their bodies and motions are turned onto Tekken Tag's joint
 //! axes. Reads Tekken 3's game root (this converter's output) and Tekken Tag's (ok_tekken_tag_converter's, through
 //! `ctx.out`: the extras over it), writes the files that add them to Tekken Tag into `ctx.out`. Also Tekken Ball's
-//! rules, court and sounds ([`ball`]) and Tekken Force's stages, soldiers, bosses, pictures, music and sounds
-//! ([`force`]).
+//! rules, court and sounds ([`ball`]), Tekken Force's stages, soldiers, bosses, pictures, music and sounds
+//! ([`force`]), and Tekken 3's HUD those two modes draw ([`hud`]).
 //!
 //! Tekken 3's aliases and Tekken Tag's are numbered apart: they are paired on the 14 fighters both games have
 //! ([`pairing`]): their attacks by (frames, hit mask, active frames) when unique on both sides, the reactions those
@@ -1136,6 +1136,7 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
         voices(ctx, t3, &d, read(ttt, "gamedata/sound.json")?, read(ttt, "audio/index.json")?)?;
     ball(ctx, t3, &sp, &ids, &mut sound, &mut audio)?;
     force(ctx, t3, &d, &ids, &mut sound, &mut audio)?;
+    hud(ctx, t3)?;
     write(ctx, "gamedata/sound.json", &sound)?;
     write(ctx, "audio/index.json", &audio)?;
     write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
@@ -1428,6 +1429,42 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
         codes.len()
     ));
     write(ctx, "gamedata/force.json", &f)
+}
+
+/// Where Tekken 3's HUD goes in Tekken Tag's extras ([`hud`]), and the picture sets it draws from: the in-game
+/// HUD and its fonts (the executable's), Tekken Force's overlay (its keys).
+pub const T3_HUD: &str = "t3";
+const HUD_SETS: [&str; 2] = ["exe", "r007_raw"];
+
+/// Tekken 3's HUD for its modes under Tekken Tag (Tekken Force's bars, name plates, keys, progress map and results;
+/// Tekken Ball's gauges): its pictures of [`HUD_SETS`] with their index and palettes, and screens.json, under
+/// [`T3_HUD`]/ as in Tekken 3's root. Nothing without Tekken 3's Force or Ball.
+fn hud(ctx: &Ctx, t3: &dyn Vfs) -> Result<()> {
+    if !t3.exists("gamedata/force.json") && !t3.exists("gamedata/ball.json") {
+        return Ok(());
+    }
+    let ours = |file: &Value| file.as_str().and_then(|f| f.split('/').next()).is_some_and(|s| HUD_SETS.contains(&s));
+    let mut index = read(t3, "pictures/index.json")?;
+    let sets = index.as_array_mut().context("pictures/index.json: not a list")?;
+    for s in sets.iter_mut() {
+        if let Some(images) = s["images"].as_array_mut() {
+            images.retain(|i| ours(&i["file"]));
+        }
+    }
+    sets.retain(|s| !arr(&s["images"]).is_empty());
+    write(ctx, &format!("{T3_HUD}/pictures/index.json"), &index)?;
+    let mut cluts = read(t3, "pictures/cluts.json")?;
+    if let Some(c) = cluts["cluts"].as_object_mut() {
+        c.retain(|source, _| HUD_SETS.contains(&source.as_str()));
+    }
+    write(ctx, &format!("{T3_HUD}/pictures/cluts.json"), &cluts)?;
+    for set in HUD_SETS {
+        for e in t3.list(&format!("pictures/{set}"))?.into_iter().filter(|e| !e.is_dir) {
+            let file = format!("pictures/{set}/{}", e.name);
+            ctx.out.write(&format!("{T3_HUD}/{file}"), &t3.read(&file)?)?;
+        }
+    }
+    ctx.out.write(&format!("{T3_HUD}/gamedata/screens.json"), &t3.read("gamedata/screens.json")?)
 }
 
 /// Tekken 3's stages `(old, new)` added to Tekken Tag's stages.json as arenas `new`: their name and light table (the
