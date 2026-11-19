@@ -1329,6 +1329,8 @@ fn ball(ctx: &Ctx, t3: &dyn Vfs, sp: &Space, ids: &Ids, sound: &mut Value, audio
     let court = n(&c["stage"]).context("ball.json: no stage")?;
     c["stage"] = json!(BALL_STAGE);
     ctx.out.write(&format!("stages/stage_{BALL_STAGE:02}.glb"), &t3.read(&format!("stages/stage_{court:02}.glb"))?)?;
+    // (its light: the ball's shadow takes the court's shadow colour)
+    add_stages(ctx, t3, &[(court, BALL_STAGE)])?;
     // the sounds: each code once, as new ids
     let codes = codes_in(c["sounds"].as_object().context("ball.json: sounds")?.values());
     let first = sound_group(ctx, t3, &codes, sound, audio)?;
@@ -1348,7 +1350,7 @@ const FORCE_SOUNDS: [&str; 5] = ["/chicken/sfx", "/chicken/voice", "/countdown/c
 
 /// Tekken 3's Tekken Force under Tekken Tag (OpenKumite's mode there): Tekken 3's force.json with its numbers Tekken
 /// Tag's, written with its stages (as arenas from [`FORCE_STAGE`]; their lights, which the blob shadows' colour is
-/// part of, in a stages.json of their own), the chickens' pictures, the final stage's music (a new BGM id) and its
+/// part of, added to stages.json), the chickens' pictures, the final stage's music (a new BGM id) and its
 /// sounds (a group of new ids in `sound` / `audio`). Renumbered: the soldiers' selection (Crow's: a crossover
 /// fighter), the bosses and the final character (Tekken Tag's bodies of the same name), the boss routes by Tekken
 /// Tag's selection (body x 8 + costume; a fighter without a Tekken 3 namesake takes the route of Tekken 3's
@@ -1364,16 +1366,11 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
     olds.sort_unstable();
     olds.dedup();
     let to = |s: Option<usize>| s.and_then(|s| olds.iter().position(|&o| o == s)).map(|k| FORCE_STAGE + k);
-    let stages3 = read(t3, "gamedata/stages.json")?;
-    let mut lit = Vec::new();
     for (k, &old) in olds.iter().enumerate() {
         let id = FORCE_STAGE + k;
         ctx.out.write(&format!("stages/stage_{id:02}.glb"), &t3.read(&format!("stages/stage_{old:02}.glb"))?)?;
-        if let Some(e) = arr(&stages3["stages"]).iter().find(|e| n(&e["id"]) == Some(old)) {
-            lit.push(json!({"id": id, "name": e["name"], "light": e["light"]}));
-        }
     }
-    write(ctx, "gamedata/stages.json", &json!({"stages": lit}))?;
+    add_stages(ctx, t3, &olds.iter().enumerate().map(|(k, &old)| (old, FORCE_STAGE + k)).collect::<Vec<_>>())?;
     for s in f["stages"].as_array_mut().context("force.json: stages")? {
         s["stage"] = json!(to(n(&s["stage"])));
     }
@@ -1431,6 +1428,20 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
         codes.len()
     ));
     write(ctx, "gamedata/force.json", &f)
+}
+
+/// Tekken 3's stages `(old, new)` added to Tekken Tag's stages.json as arenas `new`: their name and light table (the
+/// fighters' light, the shadows' colour), beside Tekken Tag's own entries.
+fn add_stages(ctx: &Ctx, t3: &dyn Vfs, pairs: &[(usize, usize)]) -> Result<()> {
+    let stages3 = read(t3, "gamedata/stages.json")?;
+    let path = "gamedata/stages.json";
+    let mut stages = if ctx.out.exists(path) { read(ctx.out, path)? } else { json!({"stages": []}) };
+    for &(old, id) in pairs {
+        if let Some(e) = arr(&stages3["stages"]).iter().find(|e| n(&e["id"]) == Some(old)) {
+            push(&mut stages["stages"], json!({"id": id, "name": e["name"], "light": e["light"]}))?;
+        }
+    }
+    write(ctx, path, &stages)
 }
 
 /// Each SePlay code in `vals` (numbers and lists of them) once, in order.
