@@ -12,6 +12,9 @@
 //!     zero   : zero-damage contact / op 9 (kind 3 / 1): 007 cells 27-47, CLUT (48,503), pink
 //!     block  : blocked hit (kind 3 / 2): 007 cells 48-63 then 008 cells 0-4, CLUT (64,503), steel blue
 //!     dust   : ground impact / op 0xA (kind 3 / 3): 008 cells 9-35, CLUT (80,503), grey, 50 % blend
+//!     fire   : Gon's fire (effect object 8): sheet 008 cells 40-43 (its start), 44 45 46 45 (looped), CLUT (128,503)
+//!     fire_end: its end: 008 cells 47-51, CLUT (144,503)
+//!     gas    : Gon's gas puff (effect object 0x14): the dust's cells in CLUT (96,503), 50 % blend
 //!     heavy_a: the heavy-hit particle (types 1 / 2): sheet 008 16 px cell at (128,144), one atlas cell per step of
 //!              palette ramp A (256 + 16 i, 510), i = 0..15 (white -> yellow -> red -> black)
 //!     heavy_b: the ki-charged one (types 12 / 13): 008 (128,128), ramp B (256 + 16 i, 509) (white -> blue -> black)
@@ -111,6 +114,24 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str) -> Result<()> {
     strip("zero", &[(0, 27..48)], "48,503", k3[1], "add", "zero-damage contact, op 9 (kind 3/1)")?;
     strip("block", &[(0, 48..64), (1, 0..5)], "64,503", k3[1], "add", "blocked hit (kind 3/2)")?;
     strip("dust", &[(1, 9..36)], "80,503", k3[3], "half", "ground impact, op 0xA (kind 3/3): 50 % blend")?;
+    // Gon's fire and gas (effect objects 8 and 0x14): the cells their UV tables name, in their CLUTs (0x800ADD80 + 2k)
+    strip(
+        "fire",
+        &[(1, 40..47), (1, 45..46)],
+        "128,503",
+        0,
+        "add",
+        "fire (object 8): 4 start cells (0x800255C4), 4 looped (0x800255CC), 2 frames each",
+    )?;
+    strip("fire_end", &[(1, 47..52)], "144,503", 0, "add", "fire's end (0x800255D4), 2 frames each")?;
+    strip(
+        "gas",
+        &[(1, 9..36)],
+        "96,503",
+        54,
+        "half",
+        "gas puff (object 0x14, 0x800257B0): the dust's cells, 2 frames each",
+    )?;
 
     // the heavy-hit particles: a 16 px cell of sheet 008 in each palette of a ramp (16 sub-palettes per row)
     for (name, (u, v), row) in [("heavy_a", (128, 144), "256,510"), ("heavy_b", (128, 128), "256,509")] {

@@ -205,7 +205,18 @@ A local point P becomes a world point by a turn about the vertical axis plus the
 - **byte 0 ≥ 0x18** (`0x80047BBC` / `0x80047D98`):
   - the segment list comes from the side's object (`*(0x800ADEAC + 4·side)` through `0x8006E51C(side, 0)`);
   - the contact direction comes from the object's segment;
-  - so these are projectile or extra-object hits [G: Ball, Force or special-weapon objects].
+  - the objects are effect objects (pool `0x8006F4F4`, updated by `0x8006F5C0`): each one with `+0xD` bit 1 set
+    adds its travel this frame (`+0x34` → `+0x28`) to its owner's list (`+0xD` bit 4: side 0, else side 1) at
+    `0x8006FB6C`. `0x8006F0F4` starts them on each frame of the move's active window, by byte 0 (table
+    `0x800251AC`): 0x18 object 6 (Ogre's breath), 0x19 / 0x1C object 10, 0x1A object 8 (Gon's fire), 0x1B
+    object 0x13 (Gon's gas, first active frame only), at bone slot 2 (0x13: slot 11) and offsets `0x80098800 +
+    0x10·k`. There is no active-window test in the hit pass: the objects strike while the owner's move still has
+    that byte past its window's start (each object's own test) and the hit flag `+0x83` is clear. [V]
+  - Gon's fire (object 8, `0x80071E5C`): 128 units a frame along the head's x axis, held at y −216 on reaching it,
+    8 frames growing, 5–8 looped, 9 ending (striking 3); gone when the opponent's `+0xD0` (hit) is set. Gon's gas
+    (object 0x13 → 0x14, `0x800747EC` / `0x80074A30`): puffs by the table `0x80025738` {frame, distance, height},
+    54 frames each, rising (`0x3999` 16.16 a frame more), striking for 46. A fire hit (byte 0x18 / 0x1A) sets the
+    victim burning (`0x8006EF60`: ten objects 0xB on the slots of `0x80025180`). [C]
 
 ---
 
