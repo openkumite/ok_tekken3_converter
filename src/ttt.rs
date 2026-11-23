@@ -1154,6 +1154,7 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     ball(ctx, t3, &sp, &ids, &mut sound, &mut audio)?;
     force(ctx, t3, &d, &ids, &mut sound, &mut audio)?;
     hud(ctx, t3)?;
+    effects(ctx, t3)?;
     write(ctx, "gamedata/sound.json", &sound)?;
     write(ctx, "audio/index.json", &audio)?;
     write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
@@ -1446,6 +1447,28 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
         codes.len()
     ));
     write(ctx, "gamedata/force.json", &f)
+}
+
+/// Gon's fire and gas as Tekken 3 draws them: its effects atlas beside Tekken Tag's (`t3_atlas.png`) and, in Tekken
+/// Tag's effects.json, `t3`: that sheet and Tekken 3's strips of them. Nothing when either game has no effects.
+fn effects(ctx: &Ctx, t3: &dyn Vfs) -> Result<()> {
+    const DIR: &str = "pictures/effects";
+    let (Ok(mut fx), Ok(fx3)) =
+        (read(ctx.out, &format!("{DIR}/effects.json")), read(t3, &format!("{DIR}/effects.json")))
+    else {
+        return Ok(());
+    };
+    let strips: serde_json::Map<String, Value> = ["fire", "fire_end", "gas"]
+        .iter()
+        .filter_map(|k| Some((k.to_string(), fx3["strips"].get(*k)?.clone())))
+        .collect();
+    if strips.is_empty() {
+        return Ok(());
+    }
+    ctx.out.write(&format!("{DIR}/t3_atlas.png"), &t3.read(&format!("{DIR}/atlas.png"))?)?;
+    let a = &fx3["atlas"];
+    fx["t3"] = json!({"sheet": {"file": "t3_atlas.png", "cols": a["cols"], "rows": a["rows"]}, "strips": strips});
+    write(ctx, &format!("{DIR}/effects.json"), &fx)
 }
 
 /// Where Tekken 3's HUD goes in Tekken Tag's extras ([`hud`]), and the picture sets it draws from: the in-game
