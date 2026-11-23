@@ -40,6 +40,9 @@ const FIXED: [(usize, usize); 10] = [
     (3433, 4772),
     (3434, 4773),
 ];
+/// The height (game units) the select lifts a crossover fighter's stance's top to when it is lower (Gon's, under the
+/// select's camera on the floor): his head in the picture, a little under Tekken Tag's own.
+const SELECT_TOP: u64 = 1300;
 /// The air reactions by meaning, Tekken 3's entry to Tekken Tag's (0x8001A630 / 0x500678): a juggle hit, a spike,
 /// the late fall, the side hits, the cancel-driven one; Tekken Tag's own spike and fall variants (7, 5, 6) take the
 /// same.
@@ -1097,6 +1100,20 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
         if FIGHTERS[..SELECTABLE].iter().any(|f| f.0 == c) {
             let slot = arr(&roster["select_grid"]["entries"]).len();
             push(&mut roster["select_grid"]["entries"], json!({"slot": slot, "character": body, "name": name}))?;
+            // the select's 3D model (Tekken Tag's aliases 0 and 3; Tekken 3's select has none): its stance, on a pick
+            // the win screen's first win pose (rules.json `win_lose_motions`); one lying (Doctor B.'s) a round start
+            // instead; lifted to Tekken Tag's height
+            let models = &mut roster["front_end"]["select"]["models"]["motions"];
+            if models.is_array() {
+                let t3 = d.t3_set(c).context("no moveset")?;
+                let standing = |a: usize, or: usize| -> Result<&str> {
+                    let mv = |a: usize| d.t3_move(t3, a).with_context(|| format!("no move for alias {a}"));
+                    let m = mv(a)?;
+                    let m = if arr(&m["posture"]["names"]).contains(&json!("lying")) { mv(or)? } else { m };
+                    m["anim"].as_str().context("no motion")
+                };
+                self::set(models, body, json!([standing(3, 0)?, standing(3431, 2)?, SELECT_TOP]))?;
+            }
         }
         // the hurt and push spheres' radii (both games' layouts are the same); the health (Tekken 3 has one for all)
         for k in ["hurt_spheres", "push_spheres"] {
@@ -1654,6 +1671,14 @@ fn front_end(ctx: &Ctx, t3: &dyn Vfs, roster: &mut Value, bodies: [(usize, usize
         set(&mut fe["hud"]["plates"], body, json!({"picture": plate, "x": 30, "streak": 0}))?;
         push(&mut fe["select"]["selectable"], json!(body))?;
     }
+    // QUICK SELECT's names (by body x 8 + costume), in capitals as Tekken Tag's
+    if fe["select"]["quick"]["names"]["texts"].is_array() {
+        for (body, _, name) in bodies {
+            for k in 0..8 {
+                set(&mut fe["select"]["quick"]["names"]["texts"], body * 8 + k, json!(name.to_uppercase()))?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1754,6 +1779,17 @@ mod tests {
                     && n(&groups.last().context("no groups")?["first_id"]) <= n(&c["countdown"]["codes"][0]),
                 "{c}"
             );
+            // the select's 3D models: Gon's stance and first win pose, Doctor B.'s round starts; their QUICK SELECT
+            // names
+            let select = &read(&top, "gamedata/roster.json")?["front_end"]["select"];
+            let motions = &select["models"]["motions"];
+            assert!(
+                motions[34] == json!(["motion_025", "motion_191", SELECT_TOP])
+                    && motions[35] == json!(["motion_259", "motion_260", SELECT_TOP]),
+                "{motions}"
+            );
+            let names = &select["quick"]["names"]["texts"];
+            assert!(names[34 * 8] == "GON" && names[35 * 8 + 7] == "DOCTOR B.", "{names}");
             let mut files = Vec::new();
             for dir in ["characters", "gamedata", "gamedata/movesets", "pictures", "audio"] {
                 for e in top.list(dir)?.into_iter().filter(|e| !e.is_dir) {
