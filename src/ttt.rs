@@ -600,6 +600,13 @@ struct Space<'a> {
     num: BTreeMap<usize, usize>,
     added: Vec<Value>,
     made: BTreeMap<(bool, usize), usize>,
+    /// Each fighter's Tekken 3 sound scripts (character, script) as Tekken Tag's ([`scripts`]).
+    scripts: BTreeMap<(usize, usize), usize>,
+    /// Tekken Tag's aliases whose list has a plain tag command (no gate: the fallback after the screen sides'), to its
+    /// destination: the stance's and the crouch's run off (5394), lying face up's and down's roll offs (5433, 5438).
+    tags: BTreeMap<usize, usize>,
+    /// Tekken Tag's entrance move (alias 5397: the run in).
+    run_in: Option<Value>,
 }
 
 impl Space<'_> {
@@ -790,7 +797,7 @@ fn moveset(sp: &mut Space, c: usize, id: usize, ids: &Ids, cov: &mut Coverage) -
         // the fight camera's yaw caps: Tekken 3's camera ids 0x27-0x2A are Tekken Tag's 0x13-0x16
         let cam = o["flags24"]["camera_script"].as_u64().unwrap_or(0);
         o["flags24"]["camera_script"] = json!(if (0x27..=0x2A).contains(&cam) { cam - 0x14 } else { 0 });
-        let sounds = move_sounds(&o["sounds"]);
+        let sounds = move_sounds(&o["sounds"], |i| sp.scripts.get(&(c, i)).copied());
         o.insert("sounds".into(), sounds);
         moves.push(m);
     }
@@ -801,11 +808,22 @@ fn moveset(sp: &mut Space, c: usize, id: usize, ids: &Ids, cov: &mut Coverage) -
             *slot = Some(index(mv));
         }
     }
-    let [stance, back, intro] = [3, 30, 1].map(|a| e.get(&a).map(|&mv| index(mv)));
-    let (Some(stance), Some(back), Some(intro)) = (stance, back, intro) else {
-        bail!("Tekken 3's character {c}: no stance, backdash or round intro")
+    let [stance, back, start] = [3, 30, 2].map(|a| e.get(&a).map(|&mv| index(mv)));
+    let (Some(stance), Some(back), Some(start)) = (stance, back, start) else {
+        bail!("Tekken 3's character {c}: no stance, backdash or round start")
     };
-    tag_moves(&mut moves, &mut cancels, &mut aliases, [stance, back, intro]);
+    // (the entrance ends in the stance; lying (Doctor B.'s), in the round start by × instead, standing to his guard)
+    let lying = arr(&moves[stance]["posture"]["names"]).contains(&json!("lying"));
+    let after = if lying { sp.alias(2) } else { 58 };
+    // the moves Tekken Tag tags from: those whose paired alias's list has a plain tag command, to its destination
+    let mut tagged: BTreeMap<usize, usize> = BTreeMap::new();
+    for (a, &mv) in &e {
+        if let Some(&dest) = sp.p.alias.get(a).and_then(|b| sp.tags.get(b)) {
+            tagged.entry(index(mv)).or_insert(dest);
+        }
+    }
+    let run_in = sp.run_in.as_ref().context("Tekken Tag has no entrance")?;
+    tag_moves(&mut moves, &mut cancels, &mut aliases, &tagged, [back, start], (run_in, after));
     cov.aliases.push((e.len(), e.keys().filter(|a| sp.p.alias.contains_key(a)).count()));
     let dealt: BTreeSet<_> = own
         .iter()
@@ -873,15 +891,19 @@ fn moveset(sp: &mut Space, c: usize, id: usize, ids: &Ids, cov: &mut Coverage) -
 /// Tekken Tag's run off for a tag (aliases 5394, 5398: from the stance, from other moves) and entrance (5397).
 const TAG: [usize; 3] = [5394, 5398, 5397];
 
-/// The made-up tag moves (Tekken 3 has none): the tag button (command bit 14) in the stance (`moves` index
-/// `[stance, back, intro]`) starts the backdash as the run off (tagging: posture bit 24), which swaps the partner in
-/// once off the screen or at its end (as Tekken Tag's own: the swap bit, facing the opponent); the round intro is the
-/// entrance, back to the stance.
+/// The made-up tag moves (Tekken 3 has none): the tag button (command bit 14) in the moves `tagged` (`moves` index
+/// to the alias it goes to: Tekken Tag's own for the state, [`Space::tags`]) starts that alias; the run offs, the
+/// backdash (`moves` index `[back, intro]`; tagging: posture bit 24), swap the partner in once off the screen or at
+/// its end (as Tekken Tag's own: the swap bit, facing the opponent); lying, Tekken Tag's own roll off (the opponent's
+/// entry). The entrance is Tekken Tag's run in (`run_in`: its motion and frames, from off the screen) on the round
+/// start by × (`start`), then alias `after`.
 fn tag_moves(
     moves: &mut Vec<Value>,
     cancels: &mut Vec<Value>,
     aliases: &mut [Option<usize>],
-    [stance, back, intro]: [usize; 3],
+    tagged: &BTreeMap<usize, usize>,
+    [back, start]: [usize; 2],
+    (run_in, after): (&Value, usize),
 ) {
     let entry = |kind: &str,
                  cmd: u32,
@@ -895,12 +917,13 @@ fn tag_moves(
     };
     // (kumite_sim::dialect: the off-screen condition 0x101; the swap 0x100 with facing the opponent 0x2D and 0x40)
     let swap = 0x2D | 0x100 | 0x40;
-    let start = cancels.len();
-    let list = moves[stance]["cancel_start"].as_u64().unwrap_or(0) as usize;
-    cancels.push(entry("command", 0x4000, "tag", 0, TAG[0], [1, 255], 6, true));
-    let end = cancels.iter().skip(list).position(|c| c["kind"] == "end").map_or(start, |k| list + k + 1);
-    cancels.extend(cancels[list..end].to_vec());
-    moves[stance]["cancel_start"] = json!(start);
+    for (&k, &dest) in tagged {
+        let (start, list) = (cancels.len(), moves[k]["cancel_start"].as_u64().unwrap_or(0) as usize);
+        cancels.push(entry("command", 0x4000, "tag", 0, dest, [1, 255], 6, true));
+        let end = cancels.iter().skip(list).position(|c| c["kind"] == "end").map_or(start, |i| list + i + 1);
+        cancels.extend(cancels[list..end].to_vec());
+        moves[k]["cancel_start"] = json!(start);
+    }
     let mut made = |from: usize, list: Vec<Value>, next: usize| {
         let mut m = moves[from].clone();
         m["index"] = json!(moves.len());
@@ -918,8 +941,10 @@ fn tag_moves(
         ],
         TAG[2],
     );
-    let neutral = 58;
-    let enter = made(intro, vec![entry("end", 0x8000, "END", 0, neutral, [0, 0], 6, false)], neutral);
+    let enter = made(start, vec![entry("end", 0x8000, "END", 0, after, [0, 0], 6, false)], after);
+    for k in ["anim", "frames"] {
+        moves[enter][k] = run_in[k].clone();
+    }
     let raw = moves[run]["posture"]["raw"].as_u64().unwrap_or(0);
     moves[run]["posture"]["raw"] = json!(raw | 1 << 24);
     for (a, mv) in TAG.into_iter().zip([run, run, enter]) {
@@ -1040,7 +1065,28 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
         });
         num.insert(a, to);
     }
-    let mut sp = Space { d: &d, p: &p, num, added: Vec::new(), made: BTreeMap::new() };
+    let ttt_sound = read(ttt, "gamedata/sound.json")?;
+    let mut scripts = BTreeMap::new();
+    for &(c, _, _) in &FIGHTERS {
+        let set = d.t3_set(c).with_context(|| format!("Tekken 3's character {c}: no moveset"))?;
+        for i in script_ids(arr(&set["moves"]).iter().chain(arr(&d.common["moves"]))) {
+            let k = arr(&ttt_sound["scripts"]["entries"]).len() + scripts.len();
+            scripts.insert((c, i), k);
+        }
+    }
+    let mut tags = BTreeMap::new();
+    // (the first fighter's that has the alias; the copying character's set has none)
+    for set in aliases.values() {
+        for (b, m) in set.iter().enumerate().filter_map(|(b, i)| Some((b, d.moves.get((*i)?)?))) {
+            let tag =
+                d.ttt_cancels(m).into_iter().find(|c| c["kind"] == "command" && c["input"] == "tag" && c["cond"] == 0);
+            if let (false, Some(dest)) = (tags.contains_key(&b), tag.and_then(|c| n(&c["dest"]))) {
+                tags.insert(b, dest);
+            }
+        }
+    }
+    let run_in = aliases.values().find_map(|s| s.get(TAG[2]).copied().flatten()).and_then(|i| d.moves.get(i)).cloned();
+    let mut sp = Space { d: &d, p: &p, num, added: Vec::new(), made: BTreeMap::new(), scripts, tags, run_in };
     let mut cov = Coverage::default();
     let (mut index, mut roster) = (d.index.clone(), d.ttt_roster.clone());
     let mut rules = read(ttt, "gamedata/rules.json")?;
@@ -1059,6 +1105,8 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
             .chain(arr(&set["cancels"]).iter().map(|c| &c["dest"]));
         lacked.extend(refs.filter_map(n).filter(|&a| a < TTT_ALIASES && set["aliases"][a]["move"].is_null()));
     }
+    // (and the entrance's run in, which they play as their own)
+    lacked.insert(TAG[2]);
     let list = motions(&d, &aliases, &lacked);
     ctx.log(&format!("[ttt] {} Tekken Tag motions", list.len()));
     let list = json!(list);
@@ -1149,12 +1197,12 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     write(ctx, "gamedata/roster.json", &roster)?;
     write(ctx, "gamedata/rules.json", &rules)?;
     write(ctx, "gamedata/reactions.json", &reactions)?;
-    let (mut sound, mut audio) =
-        voices(ctx, t3, &d, read(ttt, "gamedata/sound.json")?, read(ttt, "audio/index.json")?)?;
+    let (mut sound, mut audio) = voices(ctx, t3, &d, ttt_sound, read(ttt, "audio/index.json")?)?;
+    self::scripts(ctx, t3, &d, &sp.scripts, &mut sound, &mut audio)?;
     ball(ctx, t3, &sp, &ids, &mut sound, &mut audio)?;
     force(ctx, t3, &d, &ids, &mut sound, &mut audio)?;
     hud(ctx, t3)?;
-    effects(ctx, t3)?;
+    effects(ctx, t3, &d)?;
     write(ctx, "gamedata/sound.json", &sound)?;
     write(ctx, "audio/index.json", &audio)?;
     write(ctx, "gamedata/ai.json", &ai(&sp, &read(t3, "gamedata/ai.json")?, read(ttt, "gamedata/ai.json")?)?)?;
@@ -1213,14 +1261,16 @@ fn ai(sp: &Space, ai3: &Value, mut ai: Value) -> Result<Value> {
 const FIRST_VOICE_ID: usize = 0x330;
 
 /// A Tekken 3 move's sound entries in Tekken Tag's: the voices (types 2, 3: the voice row's categories 0, 1 in both
-/// games) as they are, the hit sounds (1, 7) Tekken Tag's generic impact (0x7000: by damage and limb); Tekken 3's
-/// other table sounds and its timed scripts dropped (their numbers are not Tekken Tag's).
-fn move_sounds(sounds: &Value) -> Value {
+/// games) as they are, the hit sounds (1, 7) Tekken Tag's generic impact (0x7000: by damage and limb), a timed script
+/// (8) its Tekken Tag index (`script`, [`scripts`]); Tekken 3's other table sounds dropped (their numbers are not
+/// Tekken Tag's).
+fn move_sounds(sounds: &Value, script: impl Fn(usize) -> Option<usize>) -> Value {
     let list: Vec<Value> = arr(sounds)
         .iter()
         .filter_map(|e| match e["type"].as_u64()? {
             t @ (2 | 3) => Some(json!({"type": t, "index": e["index"]})),
             1 | 7 => Some(json!({"type": 7, "index": 0})),
+            8 => Some(json!({"type": 8, "index": script(n(&e["index"])?)?})),
             _ => None,
         })
         .collect();
@@ -1310,6 +1360,81 @@ fn voices(ctx: &Ctx, t3: &dyn Vfs, d: &Data, mut sound: Value, mut audio: Value)
     Ok((sound, audio))
 }
 
+/// The timed sound scripts (move sound entries of type 8) of Tekken 3's `moves`, each once, in order.
+fn script_ids<'a>(moves: impl Iterator<Item = &'a Value>) -> BTreeSet<usize> {
+    moves
+        .flat_map(|m| arr(&m["sounds"]))
+        .filter(|e| e["type"] == 8 && e["index"] != 255)
+        .filter_map(|e| n(&e["index"]))
+        .collect()
+}
+
+/// The fighters' Tekken 3 sound scripts (their falls, throws, wake-ups, win poses: 0x800971F8, [cmd, frame, code])
+/// as Tekken Tag's (0x505C10, [frame, kind, entry]) at the indices `ids` gave them, appended to `sound`'s: the voices
+/// (entry types 2-5) as they are, a table sound (cmd 0, the other types: sfx_table, then the SePlay code resolved in
+/// the fighter's bank, as the game's SePlay does) a new id of a group of the fighter's (an opponent's own-bank sound,
+/// which Tekken Tag's opponent has not, dropped).
+fn scripts(
+    ctx: &Ctx,
+    t3: &dyn Vfs,
+    d: &Data,
+    ids: &BTreeMap<(usize, usize), usize>,
+    sound: &mut Value,
+    audio: &mut Value,
+) -> Result<()> {
+    let (s3, a3) = (read(t3, "gamedata/sound.json")?, read(t3, "audio/index.json")?);
+    let (lists, table) = (arr(&s3["scripts"]["entries"]), arr(&s3["sfx_table"]["codes"]));
+    let samples: Vec<&Value> = arr(&a3["sfx"]).iter().flat_map(|b| arr(&b["samples"])).collect();
+    for &(c, _, _) in &FIGHTERS {
+        // (every fighter's lists pushed, in `ids`' order)
+        let own = arr(&d.roster["selections"]["entries"])
+            .iter()
+            .find(|e| n(&e["character"]) == Some(c))
+            .and_then(|e| n(&e["model_record"]))
+            .map_or("sys".into(), |r| format!("m{r:03}"));
+        // each entry: (frame, kind, a voice entry or a SePlay code, which)
+        let entries: Vec<Vec<(u64, u64, u64, bool)>> = ids
+            .range((c, 0)..=(c, usize::MAX))
+            .map(|(&(_, i), _)| {
+                arr(lists.get(i).unwrap_or(&Value::Null))
+                    .iter()
+                    .filter_map(|e| {
+                        let [cmd, frame, code] = [0, 1, 2].map(|k| e[k].as_u64());
+                        let (cmd, frame, code) = (cmd?, frame?, code?);
+                        if cmd != 0 && (2..=5).contains(&(code >> 12)) {
+                            return Some((frame, cmd, code, false));
+                        }
+                        let seplay = table.get((if cmd == 0 { code } else { code & 0xFFF }) as usize)?.as_u64()?;
+                        let there = seplay != 0 && !(cmd == 2 && seplay >> 14 == 3);
+                        there.then_some((frame, cmd, seplay, true))
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut codes = Vec::new();
+        for &(_, _, code, _) in entries.iter().flatten().filter(|e| e.3) {
+            if !codes.contains(&code) && sample(&samples, code, &own).is_ok() {
+                codes.push(code);
+            }
+        }
+        let first = if codes.is_empty() { 0 } else { sound_group(ctx, t3, &codes, &own, sound, audio)? };
+        for list in entries {
+            let list: Vec<Value> = list
+                .into_iter()
+                .filter_map(|(frame, cmd, code, seplay)| {
+                    if !seplay {
+                        return Some(json!([frame, cmd, code]));
+                    }
+                    let id = (first + codes.iter().position(|&x| x == code)?) as u64;
+                    Some(json!([frame, cmd, if cmd == 0 { id } else { 1 << 12 | id }]))
+                })
+                .collect();
+            push(&mut sound["scripts"]["entries"], Value::Array(list))?;
+        }
+    }
+    Ok(())
+}
+
 /// The back steps Ball pushes back, Tekken 3's aliases to Tekken Tag's (the same moves: a back dash, then the back
 /// walk or the stance; the pairing leaves them, their frames differ).
 const BACK_STEPS: [(usize, usize); 4] = [(30, 70), (31, 71), (32, 72), (33, 73)];
@@ -1352,7 +1477,7 @@ fn ball(ctx: &Ctx, t3: &dyn Vfs, sp: &Space, ids: &Ids, sound: &mut Value, audio
     add_stages(ctx, t3, &[(court, BALL_STAGE)])?;
     // the sounds: each code once, as new ids
     let codes = codes_in(c["sounds"].as_object().context("ball.json: sounds")?.values());
-    let first = sound_group(ctx, t3, &codes, sound, audio)?;
+    let first = sound_group(ctx, t3, &codes, "sys", sound, audio)?;
     c["sounds"].as_object_mut().into_iter().flat_map(|m| m.values_mut()).for_each(|v| renumber(v, &codes, first));
     ctx.log(&format!(
         "[ttt] Ball: {}, self charge {set:?} / {except:?}, {} sounds",
@@ -1433,7 +1558,7 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
     // the sounds, the chickens' pictures
     let c = &mut f["constants"];
     let codes = codes_in(FORCE_SOUNDS.iter().filter_map(|p| c.pointer(p)));
-    let first = sound_group(ctx, t3, &codes, sound, audio)?;
+    let first = sound_group(ctx, t3, &codes, "sys", sound, audio)?;
     for p in FORCE_SOUNDS {
         if let Some(v) = c.pointer_mut(p) {
             renumber(v, &codes, first);
@@ -1450,8 +1575,11 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
 }
 
 /// Gon's fire and gas as Tekken 3 draws them: its effects atlas beside Tekken Tag's (`t3_atlas.png`) and, in Tekken
-/// Tag's effects.json, `t3`: that sheet and Tekken 3's strips of them. Nothing when either game has no effects.
-fn effects(ctx: &Ctx, t3: &dyn Vfs) -> Result<()> {
+/// Tag's effects.json, `t3`: that sheet and Tekken 3's strips of them. The fighters' own sparks (Doctor B.'s blue
+/// lightning, ...: Tekken Tag's effects.json has none of them, so their heavy hits and move ops 6 / 7 showed nothing)
+/// by model record in its `characters`, as Tekken 3 draws them (a strip of that sheet, no burst), with their light.
+/// Nothing when either game has no effects.
+fn effects(ctx: &Ctx, t3: &dyn Vfs, d: &Data) -> Result<()> {
     const DIR: &str = "pictures/effects";
     let (Ok(mut fx), Ok(fx3)) =
         (read(ctx.out, &format!("{DIR}/effects.json")), read(t3, &format!("{DIR}/effects.json")))
@@ -1462,12 +1590,22 @@ fn effects(ctx: &Ctx, t3: &dyn Vfs) -> Result<()> {
         .iter()
         .filter_map(|k| Some((k.to_string(), fx3["strips"].get(*k)?.clone())))
         .collect();
-    if strips.is_empty() {
-        return Ok(());
-    }
     ctx.out.write(&format!("{DIR}/t3_atlas.png"), &t3.read(&format!("{DIR}/atlas.png"))?)?;
     let a = &fx3["atlas"];
-    fx["t3"] = json!({"sheet": {"file": "t3_atlas.png", "cols": a["cols"], "rows": a["rows"]}, "strips": strips});
+    let sheet = json!({"file": "t3_atlas.png", "cols": a["cols"], "rows": a["rows"]});
+    for e in arr(&d.roster["selections"]["entries"])
+        .iter()
+        .filter(|e| FIGHTERS.iter().any(|f| n(&e["character"]) == Some(f.0)))
+    {
+        let Some(record) = n(&e["model_record"]).map(|r| r.to_string()) else { continue };
+        if let Some(c) = fx3["characters"].get(&record) {
+            fx["characters"][&record] =
+                json!({"cells": c["cells"], "life": c["life"], "light": c["light"], "sheet": sheet});
+        }
+    }
+    if !strips.is_empty() {
+        fx["t3"] = json!({"sheet": sheet, "strips": strips});
+    }
     write(ctx, &format!("{DIR}/effects.json"), &fx)
 }
 
@@ -1545,9 +1683,16 @@ fn renumber(v: &mut Value, codes: &[u64], first: usize) {
     }
 }
 
-/// Tekken 3's system sounds `codes` (SePlay codes) as a group of new Tekken Tag ids, from past the last group's, on
+/// Tekken 3's sounds `codes` (SePlay codes; `own`: the character bank's) as a group of new Tekken Tag ids, from past the last group's, on
 /// a bank of their samples: added to `sound` / `audio`. Returns the first id (code k plays as first + k).
-fn sound_group(ctx: &Ctx, t3: &dyn Vfs, codes: &[u64], sound: &mut Value, audio: &mut Value) -> Result<usize> {
+fn sound_group(
+    ctx: &Ctx,
+    t3: &dyn Vfs,
+    codes: &[u64],
+    own: &str,
+    sound: &mut Value,
+    audio: &mut Value,
+) -> Result<usize> {
     let a3 = read(t3, "audio/index.json")?;
     let samples: Vec<&Value> = arr(&a3["sfx"]).iter().flat_map(|b| arr(&b["samples"])).collect();
     let bank = arr(&audio["sfx"]).iter().filter_map(|b| n(&b["bank"])).max().unwrap_or(0) + 1;
@@ -1556,7 +1701,7 @@ fn sound_group(ctx: &Ctx, t3: &dyn Vfs, codes: &[u64], sound: &mut Value, audio:
     let g = groups.len();
     let (mut list, mut group) = (Vec::new(), Vec::new());
     for (k, &code) in codes.iter().enumerate() {
-        let s = sample(&samples, code, "sys")?;
+        let s = sample(&samples, code, own)?;
         let file = s["file"].as_str().unwrap_or_default();
         ctx.out.write(&format!("audio/sfx/{bank:03}/{k:03}.wav"), &t3.read(&format!("audio/sfx/{file}"))?)?;
         let rate = s["rate"].as_u64().unwrap_or(22050);
@@ -1811,6 +1956,23 @@ mod tests {
                     && motions[35] == json!(["motion_259", "motion_260", SELECT_TOP]),
                 "{motions}"
             );
+            // Doctor B.: his backflip's script (Tekken 3's 154: his voice, then the take-off and landing as a group
+            // of his) past Tekken Tag's; his spark on Tekken 3's atlas; the tag from more than the stance (lying, his
+            // guard), Tekken Tag's run in as the entrance
+            let set = read(&top, "gamedata/movesets/moveset_33.json")?;
+            let flip = arr(&set["moves"]).iter().find(|m| m["anim"] == "motion_040").context("no backflip")?;
+            let script = n(&flip["sounds"][0]["index"]).context("no script")?;
+            let base = arr(&read(&ttt, "gamedata/sound.json")?["scripts"]["entries"]).len();
+            let list = &read(&top, "gamedata/sound.json")?["scripts"]["entries"][script];
+            assert!(script >= base && list[0] == json!([2, 1, 8192]) && list[1][2].as_u64() > Some(0x1000), "{list}");
+            let fx = read(&top, "pictures/effects/effects.json")?;
+            assert!(
+                fx["characters"]["247"]["sheet"]["file"] == "t3_atlas.png"
+                    && fx["characters"]["247"]["burst"].is_null()
+            );
+            let tags = arr(&set["cancels"]).iter().filter(|c| c["input"] == "tag").count();
+            let enter = n(&set["aliases"][TAG[2]]["move"]).context("no entrance")?;
+            assert!(tags > 3 && set["moves"][enter]["anim"] != "motion_261", "{tags} {}", set["moves"][enter]);
             let names = &select["quick"]["names"]["texts"];
             assert!(names[34 * 8] == "GON" && names[35 * 8 + 7] == "DOCTOR B.", "{names}");
             let mut files = Vec::new();
