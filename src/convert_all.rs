@@ -255,9 +255,10 @@ fn canonical_glb(data: &[u8]) -> Result<Vec<u8>> {
 /// manifest.json's `format`: the converted data's layout (2: the engine reads every fact of the games from it; 3:
 /// its keys name no game; 4: the rules of particular moves, movesets and sounds are data; 5: the screens' places,
 /// sizes and pictures are data too; 6: the modes' rules, the select's ball and the HUD's rules once each; 7: the
-/// result screens' faces and log, the VS panel's tab; 8: the half-size face's slash, the team log's face flags). A
-/// full conversion sets it; a refresh keeps the one there (an older conversion stays one).
-pub const FORMAT: i64 = 8;
+/// result screens' faces and log, the VS panel's tab; 8: the half-size face's slash, the team log's face flags; 9: Gon's
+/// fire and gas pictures, effects.json `fire`, `fire_end`, `gas`). A full conversion sets it; a refresh keeps the one
+/// there (an older conversion stays one).
+pub const FORMAT: i64 = 9;
 
 /// Adds the format (when there is none) and the fingerprint, writes manifest.json; the manifest.
 pub fn write_manifest(out: &dyn Vfs, mut manifest: Map<String, Value>) -> Result<Value> {
