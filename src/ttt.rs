@@ -1262,8 +1262,8 @@ const FIRST_VOICE_ID: usize = 0x330;
 
 /// A Tekken 3 move's sound entries in Tekken Tag's: the voices (types 2, 3: the voice row's categories 0, 1 in both
 /// games) as they are, the hit sounds (1, 7) Tekken Tag's generic impact (0x7000: by damage and limb), a timed script
-/// (8) its Tekken Tag index (`script`, [`scripts`]); Tekken 3's other table sounds dropped (their numbers are not
-/// Tekken Tag's).
+/// (8) its Tekken Tag index (`script`, [`scripts`]), the jump's mute (9, entry 0: Tekken Tag's 0x376578 too); Tekken
+/// 3's other table sounds dropped (their numbers are not Tekken Tag's).
 fn move_sounds(sounds: &Value, script: impl Fn(usize) -> Option<usize>) -> Value {
     let list: Vec<Value> = arr(sounds)
         .iter()
@@ -1271,6 +1271,7 @@ fn move_sounds(sounds: &Value, script: impl Fn(usize) -> Option<usize>) -> Value
             t @ (2 | 3) => Some(json!({"type": t, "index": e["index"]})),
             1 | 7 => Some(json!({"type": 7, "index": 0})),
             8 => Some(json!({"type": 8, "index": script(n(&e["index"])?)?})),
+            9 if e["index"] == 0 => Some(json!({"type": 9, "index": 0})),
             _ => None,
         })
         .collect();
@@ -1886,6 +1887,13 @@ mod tests {
             todo.extend(arr(&nodes[i]["children"]).iter().filter_map(n).map(|c| (c, q, place)));
         }
         Ok(world.into_iter().map(|w| w.map_or([0.0; 3], |w| w.1)).collect())
+    }
+
+    /// The jump's mute (type 9 entry 0) is kept; Tekken 3's other type 9 entries and table sounds are dropped.
+    #[test]
+    fn the_jumps_mute_is_kept() {
+        let sounds = json!([{"type": 9, "index": 0}, {"type": 9, "index": 2}, {"type": 5, "index": 1}]);
+        assert_eq!(move_sounds(&sounds, |_| None), json!([{"type": 9, "index": 0}]));
     }
 
     /// A body turned onto Tekken Tag's axes keeps every joint where it was; a hand's axes are a quarter turn off.
