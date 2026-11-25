@@ -539,7 +539,17 @@ pub fn convert(
     g.j.insert("nodes".into(), Value::Null); // keeps the key's place: Python sets j['nodes'] before j['skins']
     let ibm_acc = g.acc(&f32_bytes(&ibm), order.len(), 5126, "MAT4", None, None, false);
     let joints: Vec<usize> = (0..order.len()).collect();
-    g.j.insert("skins".into(), json!([{"joints": joints, "skeleton": root, "inverseBindMatrices": ibm_acc}]));
+    // the 18 joint slots' places on their parents as the PS1 loads them (P+0xF74 + 32 s + 0x14, 0x80035ABC: the row's
+    // x, y, -z), for the engine's slots in the game's integers
+    let slots = skel::OFFSET_ROW
+        .iter()
+        .map(|&r| sk.t.get(r).map(|t| t.map(|v| v as i64)))
+        .collect::<Option<Vec<_>>>()
+        .context("a slot's row is missing")?;
+    g.j.insert(
+        "skins".into(),
+        json!([{"joints": joints, "skeleton": root, "inverseBindMatrices": ibm_acc, "extras": {"slots": slots}}]),
+    );
     let mesh_node = nodes.len();
     nodes.push(json!({"name": "mesh", "mesh": 0, "skin": 0}));
     g.j.insert("nodes".into(), Value::Array(nodes));
@@ -585,6 +595,8 @@ pub fn convert(
             }
             let mut rot: Vec<Vec<[f64; 4]>> = vec![Vec::with_capacity(nf); order.len()];
             let mut root_t = Vec::with_capacity(3 * nf);
+            // each frame's 49 channels as the PS1 decodes them (0x80038B4C into 0x800A85E8), the pose solver's input
+            let mut decoded: Vec<u8> = Vec::with_capacity(98 * nf);
             let mut sim = Springs::new(&sk, springs, (mid as i64 - 71).div_euclid(4));
             // let hair/cloth settle on the first pose
             let p0 = anim::decode(t_, bank, o, 0)?;
@@ -593,6 +605,7 @@ pub fn convert(
             }
             for f in 0..nf {
                 let raw = anim::decode(t_, bank, o, f as i64)?;
+                decoded.extend(raw.iter().flat_map(|&v| (v as i16).to_le_bytes()));
                 let wf = sk.pose(&raw, Some(&mut sim))?;
                 for (k, &r) in order.iter().enumerate() {
                     let wc = pick(&wf, r)?;
@@ -654,7 +667,8 @@ pub fn convert(
             samplers.push(json!({"input": times, "output": out, "interpolation": "LINEAR"}));
             let target = json!({"node": root, "path": "translation"});
             channels.push(json!({"sampler": samplers.len() - 1, "target": target}));
-            anims.push(json!({"name": format!("{prefix}_{mi:03}"), "samplers": samplers, "channels": channels}));
+            let pose = g.acc(&decoded, 49 * nf, 5122, "SCALAR", None, None, false);
+            anims.push(json!({"name": format!("{prefix}_{mi:03}"), "samplers": samplers, "channels": channels, "extras": {"channels": pose}}));
         }
     }
     let na = anims.len();
