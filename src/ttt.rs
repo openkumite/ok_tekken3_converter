@@ -1089,6 +1089,7 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
     let mut sp = Space { d: &d, p: &p, num, added: Vec::new(), made: BTreeMap::new(), scripts, tags, run_in };
     let mut cov = Coverage::default();
     let (mut index, mut roster) = (d.index.clone(), d.ttt_roster.clone());
+    roster["models"] = json!([]);
     let mut rules = read(ttt, "gamedata/rules.json")?;
     let rules3 = read(t3, "gamedata/rules.json")?;
     let mut sets = Vec::new();
@@ -1136,6 +1137,12 @@ pub fn install(ctx: &Ctx, t3: &dyn Vfs) -> Result<Coverage> {
             push(
                 &mut index["models"],
                 json!({"model": record, "model_record": record, "glb": glb, "body": body, "moveset_id": id, "moveset_file": file}),
+            )?;
+            // (the model's size, which scales its motions' root as on the PS1: without it Gon's ran at 100 %)
+            let size = arr(&d.roster["models"]).iter().find(|m| n(&m["model_record"]) == Some(record));
+            push(
+                &mut roster["models"],
+                json!({"model_record": record, "size_percent": size.map(|m| &m["size_percent"])}),
             )?;
             push(
                 &mut roster["selections"]["entries"],
@@ -1966,9 +1973,14 @@ mod tests {
                     && n(&groups.last().context("no groups")?["first_id"]) <= n(&c["countdown"]["codes"][0]),
                 "{c}"
             );
+            // their models' sizes (Gon's 45 %, Doctor B.'s 90 %: their motions' root scale)
+            let roster = read(&top, "gamedata/roster.json")?;
+            let sizes: Vec<_> =
+                arr(&roster["models"]).iter().map(|m| (n(&m["model_record"]), n(&m["size_percent"]))).collect();
+            assert!(sizes.contains(&(Some(239), Some(45))) && sizes.contains(&(Some(247), Some(90))), "{sizes:?}");
             // the select's 3D models: Gon's stance and first win pose, Doctor B.'s round starts; their QUICK SELECT
             // names
-            let select = &read(&top, "gamedata/roster.json")?["front_end"]["select"];
+            let select = &roster["front_end"]["select"];
             let motions = &select["models"]["motions"];
             assert!(
                 motions[34] == json!(["motion_025", "motion_191", SELECT_TOP])
