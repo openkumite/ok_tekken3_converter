@@ -1595,7 +1595,7 @@ fn effects(ctx: &Ctx, t3: &dyn Vfs, d: &Data) -> Result<()> {
     else {
         return Ok(());
     };
-    let strips: serde_json::Map<String, Value> = ["fire", "fire_end", "gas"]
+    let strips: serde_json::Map<String, Value> = ["fire", "fire_end", "gas", "mist"]
         .iter()
         .filter_map(|k| Some((k.to_string(), fx3["strips"].get(*k)?.clone())))
         .collect();
