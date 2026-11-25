@@ -564,11 +564,12 @@ pub fn convert(
     if let Some(c) = common {
         banks.push(("common", c, anim::find_motions(c, h(c, 7), h(c, 8))?));
     }
-    // root motion is drawn scaled by the model's size (3DMK byte +4, P+0x4EC: r * scale >> 12 at 0x80038970;
-    // Kuma 90 %, King 106 %, Gon 45 %, the embu's own bears 70 %); only the root carries a translation
+    // root motion is drawn scaled by the model's size (3DMK byte +4; Kuma 90 %, King 106 %, Gon 45 %, the embu's own
+    // bears 70 %) in the game's integers: P+0x4EC = size * 4096 / 100 (0x80035C50), each raw channel r * it >> 12 kept
+    // to 16 bits (0x80038970); only the root carries a translation
     let size = match model.get(4) {
-        Some(&s) if s != 0 => s as f64 / 100.0,
-        _ => 1.0,
+        Some(&s) if s != 0 => (s as i64) * 4096 / 100,
+        _ => 4096,
     };
     let rest_map: HashMap<usize, Tr> = rest.iter().copied().collect();
     let pick = |wf: &Pose, r: usize| {
@@ -591,14 +592,15 @@ pub fn convert(
                 sk.pose(&p0, Some(&mut sim))?;
             }
             for f in 0..nf {
-                let wf = sk.pose(&anim::decode(t_, bank, o, f as i64)?, Some(&mut sim))?;
+                let raw = anim::decode(t_, bank, o, f as i64)?;
+                let wf = sk.pose(&raw, Some(&mut sim))?;
                 for (k, &r) in order.iter().enumerate() {
                     let wc = pick(&wf, r)?;
                     let (rl, tl) = match parent.get(&r) {
                         Some(&p) => local(&pick(&wf, p)?, &wc),
                         None => wc,
                     };
-                    let (rg, tg) = to_gl(&orthonormalize(&rl), &tl);
+                    let rg = to_gl(&orthonormalize(&rl), &tl).0;
                     let mut q = quat(&rg);
                     // keep quaternions continuous
                     if let Some(last) = rot[k].last()
@@ -608,7 +610,8 @@ pub fn convert(
                     }
                     rot[k].push(q);
                     if r == 0 {
-                        root_t.extend(tg.map(|v| (v * size) as f32));
+                        let s = |c: usize| ((raw[c] * size) >> 12) as i16 as f64;
+                        root_t.extend(to_gl(&I3, &[s(0), s(1), s(2)]).1.map(|v| v as f32));
                     }
                 }
             }
