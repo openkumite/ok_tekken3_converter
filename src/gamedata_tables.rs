@@ -2823,8 +2823,9 @@ pub fn ball(exe: &Exe, rec: &[Vec<u8>]) -> Result<Value> {
                                 "clut": clut_xy(r8.u16(0x800B4B5C)?)},
                        "strip": {"u": i8(0x800B4CBC)? & 0xFF, "v": i8(0x800B4CBC)? >> 8, "h": i8(0x800B4CA4)?,
                                  "from_dx": [i8(0x800B4BD4)?, i8(0x800B4BE0)?]},
-                       "cluts": {"p1": fill(i8(0x800B4A2C)?), "p2": fill(i8(0x800B4A20)?), "trail": clut_xy(i8(0x800B4C64)?),
-                                 "empty": clut_xy(i8(0x800B4C68)?)}});
+                       // (0x800B4C64 is a branch's delay slot: the empty part takes it, the trail 0x800B4C68)
+                       "cluts": {"p1": fill(i8(0x800B4A2C)?), "p2": fill(i8(0x800B4A20)?), "trail": clut_xy(i8(0x800B4C68)?),
+                                 "empty": clut_xy(i8(0x800B4C64)?)}});
     // the floating texts (0x800B3F98: text, place, colour, font, frames; drawn rising a line a frame,
     // 0x800B3E8C): the hits' font and frames (0x800B1A98, 0x800B18A0), font 1's lift (0x800B40F4) and its
     // half advance (a shift and a subtract at 0x800B40DC); a ring of 8 (0x800B3FE0)

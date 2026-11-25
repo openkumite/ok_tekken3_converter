@@ -3,7 +3,7 @@
 //! is kept and renumbered into Tekken Tag's aliases; their bodies and motions are turned onto Tekken Tag's joint
 //! axes. Reads Tekken 3's game root (this converter's output) and Tekken Tag's (ok_tekken_tag_converter's, through
 //! `ctx.out`: the extras over it), writes the files that add them to Tekken Tag into `ctx.out`. Also Tekken Ball's
-//! rules, court and sounds ([`ball`]), Tekken Force's stages, soldiers, bosses, pictures, music and sounds
+//! rules, court, sounds and camera ([`ball`]), Tekken Force's stages, soldiers, bosses, pictures, music and sounds
 //! ([`force`]), and Tekken 3's HUD those two modes draw ([`hud`]).
 //!
 //! Tekken 3's aliases and Tekken Tag's are numbered apart: they are paired on the 14 fighters both games have
@@ -1485,7 +1485,15 @@ fn ball(ctx: &Ctx, t3: &dyn Vfs, sp: &Space, ids: &Ids, sound: &mut Value, audio
         b["constants"]["moves"]["push_back"],
         codes.len()
     ));
-    write(ctx, "gamedata/ball.json", &b)
+    write(ctx, "gamedata/ball.json", &b)?;
+    // Tekken 3's fight camera, Ball's (it frames the ball too, 0x80064E10): the moves' yaw caps in Tekken Tag's camera
+    // ids (Tekken 3's 0x27-0x2A are Tekken Tag's 0x13-0x16, as the moves' own)
+    let mut cam = read(t3, "gamedata/camera.json")?;
+    if let Some(caps) = cam["fight"]["yaw"]["move_caps"].as_object_mut() {
+        let id = |k: &str| u64::from_str_radix(k.trim_start_matches("0x"), 16).ok()?.checked_sub(0x14);
+        *caps = std::mem::take(caps).into_iter().filter_map(|(k, v)| Some((format!("0x{:X}", id(&k)?), v))).collect();
+    }
+    write(ctx, "gamedata/ball_camera.json", &cam)
 }
 
 /// Tekken Force's stages in Tekken Tag: arena ids past Ball's court (Tekken 3's 15-18 as 24-27).
@@ -1943,6 +1951,9 @@ mod tests {
                 groups.iter().any(|g| n(&g["first_id"]) == Some(serve))
                     && top.exists(&format!("stages/stage_{BALL_STAGE:02}.glb"))
             );
+            // and Tekken 3's camera, its yaw caps in Tekken Tag's ids
+            let cam = read(&top, "gamedata/ball_camera.json")?;
+            assert_eq!(cam["fight"]["yaw"]["move_caps"]["0x13"], json!(512), "{}", cam["fight"]["yaw"]);
             // Force: the soldiers Crow's (body 36), its stages from 24, the final character Doctor B., a countdown
             // voice the last group's id
             let f = read(&top, "gamedata/force.json")?;
