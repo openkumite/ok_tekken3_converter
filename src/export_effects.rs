@@ -15,6 +15,8 @@
 //!     fire   : Gon's fire (effect object 8): sheet 008 cells 40-43 (its start), 44 45 46 45 (looped), CLUT (128,503)
 //!     fire_end: its end: 008 cells 47-51, CLUT (144,503)
 //!     gas    : Gon's gas puff (effect object 0x14): the dust's cells in CLUT (96,503), 50 % blend
+//!     mist   : Doctor B.'s mist of descriptor byte 0x19 (object 10 with +0x4C 0, 0x80072B88): the dust's cells in
+//!              CLUT (160,503), 50 % blend (byte 0x1C's is the gas's)
 //!     heavy_a: the heavy-hit particle (types 1 / 2): sheet 008 16 px cell at (128,144), one atlas cell per step of
 //!              palette ramp A (256 + 16 i, 510), i = 0..15 (white -> yellow -> red -> black)
 //!     heavy_b: the ki-charged one (types 12 / 13): 008 (128,128), ramp B (256 + 16 i, 509) (white -> blue -> black)
@@ -132,6 +134,8 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str) -> Result<()> {
         "half",
         "gas puff (object 0x14, 0x800257B0): the dust's cells, 2 frames each",
     )?;
+    // (object 10's palette: 0x800ADD80 entry 8 for byte 0x19, entry 0 (the gas's) for byte 0x1C, 0x80072B88)
+    strip("mist", &[(1, 9..36)], "160,503", 0, "half", "Doctor B.'s mist of byte 0x19 (object 10): the dust's cells")?;
 
     // the heavy-hit particles: a 16 px cell of sheet 008 in each palette of a ramp (16 sub-palettes per row)
     for (name, (u, v), row) in [("heavy_a", (128, 144), "256,510"), ("heavy_b", (128, 128), "256,509")] {
