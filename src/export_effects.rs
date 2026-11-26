@@ -20,6 +20,8 @@
 //!     heavy_a: the heavy-hit particle (types 1 / 2): sheet 008 16 px cell at (128,144), one atlas cell per step of
 //!              palette ramp A (256 + 16 i, 510), i = 0..15 (white -> yellow -> red -> black)
 //!     heavy_b: the ki-charged one (types 12 / 13): 008 (128,128), ramp B (256 + 16 i, 509) (white -> blue -> black)
+//!     ember, ember_end, floor_flame_end: the sparks (type 7) and floor flames (type 9): 16 px cells of sheet 008 at
+//!              their UV tables (0x8002553C, 0x8002554C, 0x800255FC), CLUT (112,503), one atlas cell per entry
 //!   characters: model record -> {cells, life, light: [r, g, b]}: each character's own spark (its texture record,
 //!              part 1: life x 32x32 4-bit TIMs, coloured with the first one's CLUT) and its hit-light colour
 //!   templates (0x80027950: per character id {life, light}), kind3_life (0x800279D4), ground_offsets (0x8001E818),
@@ -156,6 +158,32 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str) -> Result<()> {
             name.into(),
             json!({"cells": ids, "life": 0, "blend": "add", "palette": format!("{row} + 16 i"),
                                           "note": "one cell per ramp step i = age * 16 / life (16 px cell scaled x2)"}),
+        );
+    }
+
+    // the breath's and fire's sparks (type 7) and the flames on the floor (type 9): 16 px cells of sheet 008 at the u, v
+    // pairs of their tables, in the CLUT at 0x800ADD84 (112, 503), added
+    let pal = pal_of("112,503")?;
+    for (name, table, n, note) in [
+        ("ember", 0x8002553C, 8, "spark (type 7) and floor flame (type 9): their loop, 2 frames each (0x80071CA8)"),
+        ("ember_end", 0x8002554C, 12, "spark's end (0x80071D80), a frame each"),
+        ("floor_flame_end", 0x800255FC, 16, "floor flame's end (0x80072900), a frame each"),
+    ] {
+        let mut ids = Vec::new();
+        for k in 0..n {
+            let (u, v) = (exe.u8(table + 2 * k)? as u32, exe.u8(table + 2 * k + 1)? as u32);
+            let small = crop(1, u, v, 16, 16);
+            let c = rgba(&pal, small.width(), small.height(), small.pixels().map(|p| p[0] as u16))?;
+            let big = imageops::resize(&c, c.width() * 2, c.height() * 2, imageops::FilterType::Nearest);
+            if big.dimensions() != (CELL, CELL) {
+                bail!("sheet 008's spark cell at ({u}, {v}) is not 16 x 16");
+            }
+            cells.push(big);
+            ids.push(cells.len() - 1);
+        }
+        strips.insert(
+            name.into(),
+            json!({"cells": ids, "life": 0, "blend": "add", "palette": "112,503", "note": format!("{note} (16 px cell scaled x2)")}),
         );
     }
 
