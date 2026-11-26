@@ -188,22 +188,48 @@ pub struct FloorTile {
     clut: u16,
 }
 
-/// The container part of 808 bytes (u32 128 + 10 x 10 entries); only the first `rows` rows are used.
-pub fn parse_floor(texrec: &[u8], cols: usize, rows: usize) -> Result<Vec<FloorTile>> {
-    let n = u32at(texrec, 0)?;
-    for i in 0..n {
-        let (o, size) = (u32at(texrec, 4 + 8 * i)?, u32at(texrec, 8 + 8 * i)?);
-        if size == 808 {
-            // u32 128, 100 entries, 4 trailing bytes
-            return (0..cols * rows)
-                .map(|i| {
-                    let e = o + 4 + 8 * i;
-                    Ok(FloorTile { uv: u16at(texrec, e)?, tpage: u16at(texrec, e + 2)?, clut: u16at(texrec, e + 6)? })
-                })
-                .collect();
+/// Where the container part of 808 bytes starts (u32 128, 10 x 10 entries, the floor's light mode and shade).
+fn floor_part(texrec: &[u8]) -> Result<Option<usize>> {
+    for i in 0..u32at(texrec, 0)? {
+        if u32at(texrec, 8 + 8 * i)? == 808 {
+            return Ok(Some(u32at(texrec, 4 + 8 * i)?));
         }
     }
-    Ok(Vec::new())
+    Ok(None)
+}
+
+/// The floor map's entries; only the first `rows` rows are used.
+pub fn parse_floor(texrec: &[u8], cols: usize, rows: usize) -> Result<Vec<FloorTile>> {
+    let Some(o) = floor_part(texrec)? else { return Ok(Vec::new()) };
+    (0..cols * rows)
+        .map(|i| {
+            let e = o + 4 + 8 * i;
+            Ok(FloorTile { uv: u16at(texrec, e)?, tpage: u16at(texrec, e + 2)?, clut: u16at(texrec, e + 6)? })
+        })
+        .collect()
+}
+
+/// The floor's vertex colours (scene extras `floor_shading`), as the floor routines write them into its POLY_GT4s each
+/// frame: the mode (u16 after the floor map, 0x8004870C) picks 0x80048E58 (0: a fade with depth by the shade, the
+/// s16 after it) or 0x80049848 (spotlights: 1 one on each fighter, 2 one on their midpoint).
+fn floor_shading(texrec: &[u8], game: &disc::Game, stage: usize) -> Result<Option<Value>> {
+    let Some(o) = floor_part(texrec)? else { return Ok(None) };
+    let fade = game.at(0x8001DF6C).get(..1024).context("the floor's fade table is past the EXE")?;
+    Ok(Some(json!({
+        "mode": u16at(texrec, o + 804)?, "shade": i16at(texrec, o + 806)?, "tile": 1800,
+        // 0x80049BD0: modes 1 and 2's numerators
+        "spot": [0x0F20_0000, 0x2FAF_0800],
+        // 0x800481BC: mode 2's most (0x800ADD94); with True Ogre in the fight (0x80051304) mode 0 is mode 2 with
+        // 0x80 on stages 13 and 19 (0x80048190)
+        "cap": 192, "true_ogre_cap": if matches!(stage, 13 | 19) { 128 } else { 192 },
+        "fade": fade,
+        // 0x800489A4: the fade's depth (0x800AE21C), 6500 on stages 1, 2 and 7 until the match is decided (0x8003EB50)
+        "fade_depth": [if matches!(stage, 1 | 2 | 7) { 6500 } else { 10000 }, 10000],
+        "note": "per vertex of the 11 x 11 grid round the fighters' midpoint snapped to tiles (0x80049988), colour c, 128 = 1, \
+                 Gouraud. 1: min(254, spot[0] / d1^2 + spot[0] / d2^2), d to each fighter's root (P+0xF68; x, z, game units); \
+                 2: min(cap, spot[1] / d^2) to their midpoint; 0: 128 + fade[min(1023, (max(0, SZ - D) x (0x4000000 / \
+                 fade_depth) >> 16))] x shade >> 7 in 0..254, D the eye's distance to the midpoint (x, z; GTE square root)"
+    })))
 }
 
 /// The 1024 x 512 16-bit VRAM, row-major.
@@ -468,6 +494,7 @@ pub fn convert(
     stage: i64,
     drum_base_y: u16,
     ball: bool,
+    floor_shading: Option<Value>,
 ) -> Result<(usize, usize, (u32, u32))> {
     let objs = match geo {
         Some(g) if !g.is_empty() => parse_stage(g)?,
@@ -722,6 +749,9 @@ pub fn convert(
     }
     // the full-screen fill behind everything (0x800482B0, linked at ordering-table entry 1023): sky blue on stage 11
     // (King's: its drum's and floor's transparent texels show it), black elsewhere
+    if let Some(v) = floor_shading {
+        extras.insert("floor_shading".into(), v);
+    }
     let bg = if stage + 15 == 11 { [0x48, 0x68, 0xC8] } else { [0, 0, 0] };
     extras.insert("background_rgb".into(), json!(bg));
     g.j.insert("scenes".into(), json!([{"name": name, "nodes": roots, "extras": extras}]));
@@ -789,6 +819,8 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str, only: Option<Vec<usize>>) 
         // STAGE_Y
         let base_y = if k < 15 { u16at(game.at(0x80025138 + 4 * k as u32), 0)? } else { 0 };
         let geo = st.geo.map(rec).transpose()?;
+        // shortcut: the Force stages' floors not lit (mode 3's light, 0x800B297C, not traced); upgrade: as the arenas'
+        let shading = if k < 15 || st.tex == BALL_RECORD { floor_shading(rec(st.tex)?, &game, k)? } else { None };
         let (no, nt, (ah, aw)) = convert(
             geo,
             rec(st.tex)?,
@@ -802,6 +834,7 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str, only: Option<Vec<usize>>) 
             k as i64 - 15,
             base_y,
             st.tex == BALL_RECORD,
+            shading,
         )
         .with_context(|| fname.clone())?;
         index.push(json!({"id": k, "name": name, "file": fname, "backdrop": st.geo.is_some()}));

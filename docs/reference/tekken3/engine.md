@@ -310,9 +310,20 @@ against golden traces of the prototype (`reference/camera_golden` → `assets/te
     table `0x8009E800`; bits 0x600 of the tpage half permute the corners (0x200 mirror u, 0x400 mirror v);
     the CLUT is w1 >> 16.
   - Tile flags mirror and rotate the UVs.
-  - **Vertex colours are a CPU "spotlight" falloff** `min(0xFE, K / dist²)`, from one light per player, their
-    midpoint, a stage object, or a point in front of the camera depending on the stage. This is the only
-    fog-like effect in the game; the GTE depth cue is never used.
+  - **Vertex colours** are computed by the CPU per vertex of the 11 × 11 grid each frame (the u16 mode and s16
+    shade after the 10 × 10 map pick the routine, `0x8004808C` / `0x8004870C`; each stage glb carries them as the
+    scene extra `floor_shading`):
+    - mode 0 (`0x80048E58`): `128 + T[min(1023, max(0, SZ − D) × (0x4000000 / F) >> 16)] × shade >> 7`, clamped to
+      0..254; T the table `0x8001DF6C`, D the eye's distance to the roots' midpoint (x, z; SquareRoot0), F
+      `0x800AE21C` = 10000 (6500 on stages 1, 2 and 7 until the match is decided). Every shade is negative: the far
+      floor darkens. This is the only fog-like effect in the game; the GTE depth cue is never used.
+    - mode 1 (`0x80049848`, stage 6): `min(254, 0x0F200000 / d1² + 0x0F200000 / d2²)`, d to each root (P+0xF68).
+    - mode 2 (stages 3, 8, 9, 12, 14): `min(cap, 0x2FAF0800 / d²)` to the roots' midpoint, cap `0x800ADD94` = 0xC0.
+      With True Ogre in the fight (`0x80051304`: a fighter's id 20) mode 0 stages take mode 2, cap 0x80 on stages 13
+      and 19.
+    - modes 3 (Force stage 3: an actor from `0x800B297C`) and 4 (Force with `0x800AFAAC` = 4: x of the eye, z −2000).
+    - All checked against the PS1's values on stages 0, 6 and 9 (PCSX-Redux breakpoints at `0x8004A12C` /
+      `0x8004960C`): every vertex exact.
 - **Backdrop drum** `0x8006D7CC` → `0x8006D014` → `0x8006CC28`:
   - a world-oriented object in units of 8 world units (translation `>> 3`), centred on the fighters' root
     midpoint (x, z), its base ring `STAGE_Y` below the floor (per-stage table `0x80025138`, one u16 per 4 bytes
