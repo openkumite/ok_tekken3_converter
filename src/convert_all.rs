@@ -259,9 +259,10 @@ fn canonical_glb(data: &[u8]) -> Result<Vec<u8>> {
 /// fire and gas pictures, effects.json `fire`, `fire_end`, `gas`; 10: ball.json's gauge cluts `trail` and `empty` as
 /// drawn; 11: the motions' root scaled by the model's size in the game's integers; 12: each motion frame's 49
 /// channels and each body's joint slots in the glb; 13: Doctor B.'s mist's own palette, effects.json `mist`; 14:
-/// Gon's and Doctor B.'s model sizes in Tekken Tag's roster `models`). A full conversion sets it; a refresh keeps the
-/// one there (an older conversion stays one).
-pub const FORMAT: i64 = 14;
+/// Gon's and Doctor B.'s model sizes in Tekken Tag's roster `models`; 15: the sparks' and floor flames' pictures,
+/// effects.json `ember`, `ember_end`, `floor_flame_end`). A full conversion sets it; a refresh keeps the one there (an
+/// older conversion stays one).
+pub const FORMAT: i64 = 15;
 
 /// Adds the format (when there is none) and the fingerprint, writes manifest.json; the manifest.
 pub fn write_manifest(out: &dyn Vfs, mut manifest: Map<String, Value>) -> Result<Value> {
