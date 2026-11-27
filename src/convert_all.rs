@@ -1,6 +1,7 @@
 //! convert_all: convert everything OpenKumite needs from your own disc image into standard formats, once.
 //!
-//! usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--jobs N]   (IMAGE: .cue, .bin, .iso, .chd, ...)
+//! usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--skip endings,opening,movies,music] [--jobs N]
+//!        (IMAGE: .cue, .bin, .iso, .chd, ...)
 //!        t3_convert --fingerprint OUTDIR     (only the manifest's fingerprint, again)
 //!
 //! OUTDIR layout (OpenKumite reads only this): docs/converter.md. `convert` runs the steps in `STEPS`
@@ -11,7 +12,7 @@ use crate::{
     export_theater, pyjson,
 };
 use anyhow::{Context, Result, bail};
-use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, jobs_from, join, print_line};
+use ok_converter_common::io::{Ctx, DiscFile, StdFs, Vfs, Without, jobs_from, join, print_line};
 use serde_json::{Map, Value, json};
 use sha1::Digest;
 use std::io::Read;
@@ -36,20 +37,54 @@ pub const STEPS: [(&str, &str, &str, Step); 8] = [
     ("shadows", "export_shadows", "", |c, d, _, o| export_shadows::run(c, d, o)), // gamedata/shadows.json
 ];
 
-/// Converts `only` these steps (by name) into `ctx.out`, then writes manifest.json (`now`: when, for the steps'
-/// "converted") and returns it.
+/// What a conversion can leave out (`--skip`; the manifest's "skipped") and about how many bytes each is: the game
+/// plays without them (no ending movie: the staff roll; no opening: the title; no music: silence).
+pub const OPTIONAL: [(&str, u64); 4] =
+    [("endings", 250_000_000), ("opening", 34_000_000), ("movies", 7_000_000), ("music", 731_000_000)];
+
+/// The part of [`OPTIONAL`] a file of the output is in (movies 00-19 the endings, 20 the opening, 21 the prologue);
+/// None: one the game needs.
+pub fn optional(path: &str) -> Option<&'static str> {
+    if path.starts_with("audio/music/") {
+        return Some("music");
+    }
+    let n: u32 = path.strip_prefix("video/")?.split('.').next()?.parse().ok()?;
+    Some(match n {
+        20 => "opening",
+        21 => "movies",
+        _ => "endings",
+    })
+}
+
+/// The manifest's "skipped": the parts of [`OPTIONAL`] the media step left out (none: no key).
+fn record_skipped(manifest: &mut Map<String, Value>, skip: &[&str]) {
+    match skip.is_empty() {
+        true => manifest.remove("skipped"),
+        false => manifest.insert("skipped".into(), json!(skip)),
+    };
+}
+
+/// Converts `only` these steps (by name) into `ctx.out`, the parts of [`OPTIONAL`] in `skip` left out, then writes
+/// manifest.json (`now`: when, for the steps' "converted") and returns it.
 pub fn convert(
     ctx: &Ctx,
     disc: &dyn DiscFile,
     track2: Option<&dyn DiscFile>,
     only: &[&str],
+    skip: &[&str],
     now: &str,
 ) -> Result<Value> {
+    let left_out = |p: &str| optional(p).is_some_and(|o| skip.contains(&o));
+    let out = Without { inner: ctx.out, left_out: &left_out };
+    let ctx = &Ctx { out: &out, log: ctx.log, jobs: ctx.jobs };
     let mut manifest = if ctx.out.exists("manifest.json") {
         read_manifest(ctx.out)?
     } else {
         Map::from_iter([("steps".into(), json!({}))])
     };
+    if only.contains(&"media") {
+        record_skipped(&mut manifest, skip);
+    }
     manifest.insert("source".into(), source(disc, track2)?);
     for &step in only {
         run_step(ctx, disc, track2, step)?;
@@ -65,8 +100,18 @@ pub fn convert(
 /// Converts everything into `ctx.out` (a folder, or a pack: OpenKumite's conversion in the game) and writes the
 /// manifest; the manifest (`now`: when, for the steps' "converted"). Into a `Vfs` whose finished steps (its
 /// checkpoint) begin this run's but are not all of them, an interrupted conversion, those are not done again; else it
-/// starts clean (converting again, perhaps from another image: a full one after an ISO).
-pub fn convert_resumable(ctx: &Ctx, disc: &dyn DiscFile, track2: Option<&dyn DiscFile>, now: &str) -> Result<Value> {
+/// starts clean (converting again, perhaps from another image: a full one after an ISO). The parts of [`OPTIONAL`] in
+/// `skip` are left out.
+pub fn convert_resumable(
+    ctx: &Ctx,
+    disc: &dyn DiscFile,
+    track2: Option<&dyn DiscFile>,
+    skip: &[&str],
+    now: &str,
+) -> Result<Value> {
+    let left_out = |p: &str| optional(p).is_some_and(|o| skip.contains(&o));
+    let out = Without { inner: ctx.out, left_out: &left_out };
+    let ctx = &Ctx { out: &out, log: ctx.log, jobs: ctx.jobs };
     let plan: Vec<&str> = STEPS.iter().map(|s| s.0).collect();
     let earlier = ctx.out.done();
     let resumes = |d: &Vec<String>| d.len() < plan.len() && d.iter().zip(&plan).all(|(a, b)| a == b);
@@ -86,6 +131,7 @@ pub fn convert_resumable(ctx: &Ctx, disc: &dyn DiscFile, track2: Option<&dyn Dis
     }
     let mut manifest = Map::from_iter([("steps".into(), json!({}))]);
     manifest.insert("source".into(), source(disc, track2)?);
+    record_skipped(&mut manifest, skip);
     for &step in &plan {
         if !done.iter().any(|d| d == step) {
             run_step(ctx, disc, track2, step).context("Tekken 3")?;
@@ -291,7 +337,7 @@ pub fn main(args: &[String]) -> Result<()> {
     } else {
         let [src, out, ..] = args else {
             bail!(
-                "usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--jobs N]\n       \
+                "usage: t3_convert IMAGE OUTDIR [--only characters,stages,...] [--skip endings,opening,movies,music] [--jobs N]\n       \
                  (IMAGE: the disc image: .cue, .bin, .iso, .chd, .ccd, .mds, .ecm, .pbp, or a .zip, .7z, .tar, .gz, .xz or .zst of it)\n       \
                  t3_convert --fingerprint OUTDIR     (only the manifest's fingerprint, again)"
             )
@@ -300,6 +346,13 @@ pub fn main(args: &[String]) -> Result<()> {
             Some(i) => args.get(i + 1).context("--only needs a list of steps")?.split(',').collect(),
             None => STEPS.iter().map(|s| s.0).collect(),
         };
+        let skip: Vec<&str> = match args.iter().position(|a| a == "--skip") {
+            Some(i) => args.get(i + 1).context("--skip needs a list of parts")?.split(',').collect(),
+            None => Vec::new(),
+        };
+        if let Some(s) = skip.iter().find(|s| !OPTIONAL.iter().any(|o| o.0 == **s)) {
+            bail!("--skip {s:?}: the parts a conversion can leave out are {:?}", OPTIONAL.map(|o| o.0));
+        }
         let (track1, track2) = crate::disc::tracks(src)?;
         // each step's time, from the end of the one before (the library has no clock)
         let start = std::sync::Mutex::new(std::time::Instant::now());
@@ -312,7 +365,7 @@ pub fn main(args: &[String]) -> Result<()> {
         };
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let ctx = Ctx { out: &StdFs(out.into()), log: &log, jobs: jobs_from(args) };
-        (out, convert(&ctx, &track1, track2.as_ref().map(|t| t as &dyn DiscFile), &only, &now)?)
+        (out, convert(&ctx, &track1, track2.as_ref().map(|t| t as &dyn DiscFile), &only, &skip, &now)?)
     };
     let mpath = std::path::Path::new(out).join("manifest.json");
     print_line(&format!("manifest: {} {}", mpath.display(), manifest["fingerprint"].as_str().unwrap_or("")));
@@ -333,6 +386,17 @@ mod tests {
             String::from_utf8_lossy(&canonical_json(&v)),
             "{\"a\":\"\\u00e9\",\"b\":[100000.0,1e-05,-0.0,12345678901234567890,7]}"
         );
+    }
+
+    /// The optional parts: the movies by number, the music; nothing a fight reads.
+    #[test]
+    fn the_optional_parts() {
+        let of = ["video/00.avi", "video/19.flac", "video/20.avi", "video/21.flac", "audio/music/03.flac"].map(optional);
+        assert_eq!(of, [Some("endings"), Some("endings"), Some("opening"), Some("movies"), Some("music")]);
+        for p in ["audio/sfx/000/000.wav", "audio/index.json", "video", "characters/model_000.glb", "gamedata/x.json"] {
+            assert_eq!(optional(p), None, "{p}");
+        }
+        assert!(OPTIONAL.iter().all(|o| ["endings", "opening", "movies", "music"].contains(&o.0)));
     }
 
     /// `--fingerprint` on an older conversion keeps its format (the engine still asks for a new conversion).

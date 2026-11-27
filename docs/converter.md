@@ -20,6 +20,7 @@ OpenKumite runs the whole conversion through `convert_all::convert_resumable`. T
 
 ```sh
 t3_convert "Tekken_3_(USA).cue" assets [--only characters,stages,...] [--jobs N]  # N threads (1: none); any image format
+t3_convert "Tekken_3_(USA).cue" assets --skip endings,music  # without what the game plays without (convert_all::OPTIONAL)
 t3_convert --fingerprint assets            # only the manifest's fingerprint, again
 t3_convert MODULE ARGS...                  # one module by hand (t3_convert lists them)
 ```
@@ -36,7 +37,8 @@ t3_convert MODULE ARGS...                  # one module by hand (t3_convert list
 | shadows | `export_shadows` | `gamedata/shadows.json` |
 
 `manifest.json` records what was converted, when, from which image, and a fingerprint of everything a fight reads
-(online play refuses computers whose fingerprints differ).
+(online play refuses computers whose fingerprints differ); `skipped`, the parts `--skip` left out (`endings`: movies
+00-19, `opening`: 20, `movies`: 21, the prologue, `music`: `audio/music/`), none of them in the fingerprint.
 
 Shared modules: `disc` (ISO 9660, the BNS archive), `tim` (PS1 pictures), `t3m` / `skel` / `skin` / `anim`
 (models and motions), `gamedata_*` (the EXE's tables), `mips` (runs a routine's code to read the arguments of its

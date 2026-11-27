@@ -1653,7 +1653,10 @@ fn force(ctx: &Ctx, t3: &dyn Vfs, d: &Data, ids: &Ids, sound: &mut Value, audio:
     let bgm = n(&f["constants"]["final"]["bgm"]).context("force.json: no final bgm")?;
     let col = read(t3, "gamedata/music.json")?["bgm"][bgm]["columns"][0].clone();
     let file = col["file"].as_str().context("music.json: the final bgm has no file")?;
-    ctx.out.write(&format!("audio/music/t3_{file}"), &t3.read(&format!("audio/music/{file}"))?)?;
+    // (a pack without its music, an ISO's or one that left it out: the BGM named all the same, played silent)
+    if let Ok(track) = t3.read(&format!("audio/music/{file}")) {
+        ctx.out.write(&format!("audio/music/t3_{file}"), &track)?;
+    }
     let id = arr(&music["bgm"]).len();
     push(
         &mut music["bgm"],

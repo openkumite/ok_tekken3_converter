@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     let log = |line: &str| print_line(line);
     let ctx = Ctx { out: &StdFs(out.into()), log: &log, jobs: ok_converter_common::io::jobs_from(&[]) };
     let track2 = disc.audio(2).map(|t| t as &dyn DiscFile);
-    let manifest = ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, track2, "now")?;
+    let manifest = ok_tekken3_converter::convert_all::convert_resumable(&ctx, disc.data()?, track2, &[], "now")?;
     println!("{out}: fingerprint {}", manifest["fingerprint"].as_str().context("no fingerprint")?);
     Ok(())
 }
