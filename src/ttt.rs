@@ -194,6 +194,95 @@ fn put(bin: &mut [u8], at: &[usize], ct: u64, vals: &[f64]) {
     }
 }
 
+/// The limbs' joints (Tekken 3's slots 4, 5, 8, 9, 12, 13, 15, 16) in every motion as the PS1's pose solver turns them
+/// from the motion's channels (animation extras `channels`; [`crate::skel::solver`]), the same for every body: the
+/// glb's own were aimed with the body's own limb lengths, Gon's (45 %) straight and lifted. Tekken 3's engine draws
+/// the solver's turns itself; its glbs stay as they are (its Ball and Force extras collide on them). A joint the glb
+/// leaves at rest gets a channel.
+fn solve_limbs(j: &mut Value, bin: &mut Vec<u8>) -> Result<()> {
+    const LIMBS: [(usize, &str); 8] = [
+        (4, "upperarm_A"),
+        (5, "forearm_A"),
+        (8, "upperarm_B"),
+        (9, "forearm_B"),
+        (12, "thigh_A"),
+        (13, "shin_A"),
+        (15, "thigh_B"),
+        (16, "shin_B"),
+    ];
+    let names: Vec<String> = arr(&j["nodes"]).iter().map(|x| x["name"].as_str().unwrap_or("").to_string()).collect();
+    let Some(nodes) = LIMBS.iter().map(|(_, l)| names.iter().position(|x| x == l)).collect::<Option<Vec<usize>>>()
+    else {
+        return Ok(());
+    };
+    let c = crate::export_gltf::C;
+    for a in 0..arr(&j["animations"]).len() {
+        let anim = &j["animations"][a];
+        let Some(k) = n(&anim["extras"]["channels"]) else { continue };
+        // (the channels raw: s16)
+        let (_, at, _, _) = accessor(j, bin, k)?;
+        let raw: Vec<i64> = at.iter().map(|&o| i64::from(i16::from_le_bytes([bin[o], bin[o + 1]]))).collect();
+        let times = arr(&anim["samplers"]).first().and_then(|s| n(&s["input"])).context("a motion without samplers")?;
+        let frames = raw.len() / 49;
+        if n(&j["accessors"][times]["count"]) != Some(frames) {
+            bail!("animation {a}: its channels are not one a frame");
+        }
+        let mut q: Vec<Vec<f64>> = vec![Vec::with_capacity(4 * frames); LIMBS.len()];
+        for f in raw.as_chunks::<49>().0 {
+            let l = crate::skel::solver::locals(f);
+            for (k, &(s, _)) in LIMBS.iter().enumerate() {
+                let r = l[s].map(|r| r.map(|v| v as f64 / 4096.0));
+                let r = crate::np::mm(
+                    &crate::np::mm(&c, false, &crate::export_gltf::orthonormalize(&r), false),
+                    false,
+                    &c,
+                    false,
+                );
+                let mut e = crate::export_gltf::quat(&r);
+                // (kept continuous)
+                if q[k].len() >= 4 && e.iter().zip(&q[k][q[k].len() - 4..]).map(|(x, y)| x * y).sum::<f64>() < 0.0 {
+                    e = e.map(|v| -v);
+                }
+                q[k].extend(e);
+            }
+        }
+        for (k, &node) in nodes.iter().enumerate() {
+            let anim = &j["animations"][a];
+            let out = arr(&anim["channels"])
+                .iter()
+                .find(|ch| n(&ch["target"]["node"]) == Some(node) && ch["target"]["path"] == "rotation")
+                .and_then(|ch| n(&anim["samplers"][n(&ch["sampler"])?]["output"]));
+            if let Some(out) = out {
+                let (_, at, ct, _) = accessor(j, bin, out)?;
+                if at.len() != q[k].len() {
+                    bail!("animation {a}: a joint's turns are not one a frame");
+                }
+                put(bin, &at, ct, &q[k]);
+                continue;
+            }
+            // (a new channel: normalised s16, as the others)
+            let view = arr(&j["bufferViews"]).len();
+            let acc = arr(&j["accessors"]).len();
+            let mut add =
+                |key: &str, v: Value| j[key].as_array_mut().map(|x| x.push(v)).context("a glb without its lists");
+            add("bufferViews", json!({"buffer": 0, "byteOffset": bin.len(), "byteLength": 2 * q[k].len()}))?;
+            add(
+                "accessors",
+                json!({"bufferView": view, "componentType": 5122, "normalized": true, "count": frames, "type": "VEC4"}),
+            )?;
+            bin.extend(q[k].iter().flat_map(|&v| ((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_le_bytes()));
+            let anim = j["animations"][a].as_object_mut().context("an animation is no object")?;
+            let samplers = anim.get_mut("samplers").and_then(|s| s.as_array_mut()).context("no samplers")?;
+            samplers.push(json!({"input": times, "output": acc, "interpolation": "LINEAR"}));
+            let s = samplers.len() - 1;
+            let channels = anim.get_mut("channels").and_then(|s| s.as_array_mut()).context("no channels")?;
+            channels.push(json!({"sampler": s, "target": {"node": node, "path": "rotation"}}));
+        }
+    }
+    j["buffers"][0]["byteLength"] = json!(bin.len());
+    Ok(())
+}
+
 /// A Tekken 3 character glb with each joint's axes turned onto Tekken Tag's ([`turn`]): its nodes' rest rotations
 /// and translations, its inverse bind matrices and its motions (L' = D_parent⁻¹ · L · D, t' = D_parent⁻¹ · t); the
 /// mesh as it is, every joint where it was.
@@ -239,6 +328,7 @@ pub fn retarget_glb(b: &[u8]) -> Result<Vec<u8>> {
         }
         put(&mut bin, &at, ct, &m);
     }
+    solve_limbs(&mut j, &mut bin)?;
     // the motions (an output turned once, refused when two joints of other turns share it)
     let mut done: BTreeMap<usize, (Q, Q, bool)> = BTreeMap::new();
     for anim in arr(&j["animations"]) {
@@ -1922,6 +2012,28 @@ mod tests {
         }
         let q = qmul(conj(turn("hand_A")), turn("hand_A"));
         assert!((q[3] - 1.0).abs() < 1e-12);
+        // (Gon's shins, at rest in his own glb's motions, turn in every motion as the solver turns them)
+        let (j, bin) = glb_split(&out)?;
+        let shin = arr(&j["nodes"]).iter().position(|x| x["name"] == "shin_A").context("no shin")?;
+        for anim in arr(&j["animations"]) {
+            let ch = arr(&anim["channels"])
+                .iter()
+                .find(|c| n(&c["target"]["node"]) == Some(shin))
+                .context("a shin at rest")?;
+            let out = n(&anim["samplers"][n(&ch["sampler"]).context("no sampler")?]["output"]).context("no output")?;
+            let (q, ..) = accessor(&j, &bin, out)?;
+            let (_, at, ..) = accessor(&j, &bin, n(&anim["extras"]["channels"]).context("no channels")?)?;
+            let raw: Vec<i64> =
+                at.iter().take(49).map(|&o| i64::from(i16::from_le_bytes([bin[o], bin[o + 1]]))).collect();
+            let l = crate::skel::solver::locals(&raw)[13].map(|r| r.map(|v| v as f64 / 4096.0));
+            let c = crate::export_gltf::C;
+            let want = crate::export_gltf::quat(&crate::np::mm(&crate::np::mm(&c, false, &l, false), false, &c, false));
+            // (turned back from Tekken Tag's axes: both the shin's and the thigh's are half a turn about x)
+            let t = turn("shin_A");
+            let got = qmul(qmul(t, [q[0], q[1], q[2], q[3]]), conj(t));
+            let dot: f64 = got.iter().zip(want).map(|(a, b)| a * b).sum();
+            assert!(dot.abs() > 0.9999, "{} {got:?} {want:?}", anim["name"]);
+        }
         Ok(())
     }
 

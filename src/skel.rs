@@ -80,6 +80,187 @@ pub fn Rx(t: f64) -> M3 {
     [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]
 }
 
+/// Tekken 3's pose solver (0x8003AD10) in the PS1's integers: a frame's 49 channels to the 18 slots' turns on their
+/// parents (rows of 4096 = 1, as the GTE keeps them). The limbs are aimed on the solver's own skeleton (0x80096ECC),
+/// the same for every body: a smaller one (Gon, 45 %) bends its limbs as a full-sized one does.
+pub mod solver {
+    pub type M = [[i32; 3]; 3];
+
+    const I: M = [[4096, 0, 0], [0, 4096, 0], [0, 0, 4096]];
+    /// The slots the ten angle channels turn (0x8001A330).
+    const ANGLE_SLOTS: [usize; 10] = [0, 1, 11, 2, 3, 7, 6, 10, 14, 17];
+    /// The solver's own skeleton (0x80096ECC): the chest, the shoulders and the pelvis on their parents, then the
+    /// upper limbs' starts, the targets measured from them.
+    const BASE: [[i32; 3]; 8] = [
+        [0, 0, 0],
+        [350, 0, -100],
+        [350, 0, 100],
+        [0, 0, 0],
+        [-140, 0, 0],
+        [-140, 0, 0],
+        [-160, 0, 100],
+        [-160, 0, -100],
+    ];
+    /// 0x80096EAC: slots 2, 3 and 7 turned a quarter about y after their angles.
+    const QUARTER: M = [[0, 0, -4096], [0, 4096, 0], [4096, 0, 0]];
+
+    /// The 4096 sine table's entry `a` (12 bits).
+    fn sin12(a: i32) -> i32 {
+        (libm::sin((a & 0xFFF) as f64 * std::f64::consts::TAU / 4096.0) * 4096.0).round() as i32
+    }
+
+    /// The sine and cosine of an angle's top 12 bits (0x8001E8C4, `(a >> 3) & 0x1FFE`).
+    fn sc(a: i32) -> (i32, i32) {
+        let k = (a & 0xFFFF) >> 4;
+        (sin12(k), sin12(k + 1024))
+    }
+
+    /// The GTE's square root.
+    fn gte_sqrt(a: i32) -> i32 {
+        if a <= 0 {
+            return 0;
+        }
+        let lz = (a as u32).leading_zeros() & !1;
+        let m = if lz <= 24 { (a as u32) >> (24 - lz) } else { (a as u32) << (lz - 24) } as i32;
+        let t = (f64::from(m) / 64.0).sqrt() * 4096.0;
+        ((t as i32) << ((31 - lz) >> 1)) >> 12
+    }
+
+    fn s16(v: i32) -> i32 {
+        v as i16 as i32
+    }
+
+    /// MulMatrix (0x80082288): a x b, each sum >> 12, kept to the GTE's s16.
+    fn mul(a: &M, b: &M) -> M {
+        std::array::from_fn(|r| {
+            std::array::from_fn(|c| ((0..3).map(|k| a[r][k] * b[k][c]).sum::<i32>() >> 12).clamp(-0x8000, 0x7FFF))
+        })
+    }
+
+    /// MVMVA (sf 1, the MAC): a v >> 12.
+    fn mv(a: &M, v: [i32; 3]) -> [i32; 3] {
+        std::array::from_fn(|r| ((0..3).map(|k| i64::from(a[r][k]) * i64::from(v[k])).sum::<i64>() >> 12) as i32)
+    }
+
+    /// 0x8003A338: Rz Ry Rx of the s16 angles, each product >> 12 in its order.
+    fn euler(x: i32, y: i32, z: i32) -> M {
+        let ((sx, cx), (sy, cy), (sz, cz)) = (sc(x), sc(y), sc(z));
+        let cxcz = (cx * cz) >> 12;
+        let (sxcz, sxsz, sxcy, cxsz) = ((sx * cz) >> 12, (sx * sz) >> 12, (sx * cy) >> 12, (cx * sz) >> 12);
+        let (a, b, c) = ((sy * sxcz) >> 12, (sy * sxsz) >> 12, (sy * cxcz) >> 12);
+        let m = [
+            [(cy * cz) >> 12, a - cxsz, sxsz + c],
+            [(cy * sz) >> 12, cxcz + b, ((cxsz * sy) >> 12) - sxcz],
+            [-sy, sxcy, (cy * cx) >> 12],
+        ];
+        m.map(|r| r.map(s16))
+    }
+
+    /// 0x8003BA28: `target` in the axes of `(turn, at)` (its transpose times the difference, split at bit 15 for
+    /// the GTE: the high part unshifted times 8, the low part >> 12), plus `off`.
+    fn toward(target: [i32; 3], turn: &M, at: [i32; 3], off: [i32; 3]) -> [i32; 3] {
+        let d: [i32; 3] = std::array::from_fn(|k| target[k] - at[k]);
+        let part = |v: i32, hi: bool| {
+            let a = if hi { v.abs() >> 15 } else { v.abs() & 0x7FFF };
+            if v < 0 { -a } else { a }
+        };
+        std::array::from_fn(|r| {
+            let hi: i32 = (0..3).map(|k| turn[k][r] * part(d[k], true)).sum();
+            let lo: i32 = (0..3).map(|k| turn[k][r] * part(d[k], false)).sum::<i32>() >> 12;
+            let hi = if hi < 0 { -((-hi) << 3) } else { hi << 3 };
+            lo + hi + off[r]
+        })
+    }
+
+    /// A sum >> 12 cut toward zero (0x8003C148's `addiu 0xFFF`).
+    fn cut(v: i32) -> i32 {
+        (v + if v < 0 { 0xFFF } else { 0 }) >> 12
+    }
+
+    /// 0x8003BCA8: an arm's (`elbow`) or a leg's two slots aimed at the target `v` (the upper's axes), the upper
+    /// turned by `twist` about its length, the joint bent by the law of cosines on the solver's own lengths (as the
+    /// constants fold them in). `lower` is kept when the target sits on the joint.
+    fn limb(v: [i32; 3], twist: i32, elbow: bool, lower: M) -> Option<(M, M)> {
+        let [x, y, z] = v;
+        let d = x.wrapping_mul(x).wrapping_add(y.wrapping_mul(y)).wrapping_add(z.wrapping_mul(z));
+        if d == 0 {
+            return None;
+        }
+        let l = gte_sqrt(d);
+        let inv = 0x40_0000 / l.max(1);
+        let (nx, ny, nz) = ((x * inv) >> 10, (y * inv) >> 10, (z * inv) >> 10);
+        let (t1, t2, a3) = match nx + 0x1000 {
+            0 => (-0x800, (y * inv) >> 11, -0x1000),
+            k if k >= 0x2000 => (-0x800, (-ny) >> 1, 0x1000),
+            k => {
+                let t1 = -0x100_0000 / k;
+                (t1, (t1 * ny) >> 12, 0x1000)
+            }
+        };
+        let a1 = ((t2 * ny) >> 12) + a3;
+        let v0 = (t1 * nz) >> 12;
+        let a3 = a3 + nx;
+        let (t0, a2, t5, t8, t9) =
+            ((t2 * a3) >> 12, (v0 * a3) >> 12, (v0 * ny) >> 12, (t2 * nz) >> 12, ((v0 * nz) >> 12) + 0x1000);
+        let (s, c) = sc(twist);
+        let upper = [
+            [nx, (c * t0 + s * a2) >> 12, (-s * t0 + c * a2) >> 12],
+            [ny, (c * a1 + s * t5) >> 12, (-s * a1 + c * t5) >> 12],
+            [nz, (c * t8 + s * t9) >> 12, (-s * t8 + c * t9) >> 12],
+        ]
+        .map(|r| r.map(s16));
+        let (far, near, k, ka, kb) = if elbow { (0x216, 0x47, 37380, 217, 282) } else { (0x37C, 3, 1784, 146, 147) };
+        if l >= far {
+            return Some((upper, I));
+        }
+        if l < near {
+            return Some((upper, lower));
+        }
+        let (a, b) = (l << 11, (inv * k) >> 11);
+        let unit = -0x1000..=0x1000;
+        let cos = ((a + b) * ka) >> 16;
+        let sin =
+            if unit.contains(&cos) { s16(gte_sqrt(0x100_0000 - cos * cos) * if elbow { 1 } else { -1 }) } else { 0 };
+        let cos = cos.clamp(-0x1000, 0x1000);
+        // 0x8003BB88: the upper's first two columns turned by the bend
+        let upper = upper.map(|r| [s16((r[0] * cos + r[1] * sin) >> 12), s16((-r[0] * sin + r[1] * cos) >> 12), r[2]]);
+        let c2 = ((a - b) * kb) >> 16;
+        let s2 = if unit.contains(&c2) { (-sin * if elbow { 5332 } else { 4114 }) >> 12 } else { 0 };
+        let c2 = c2.clamp(-0x1000, 0x1000);
+        let (cc, ss) = (cut(cos * c2 + sin * s2), cut(-sin * c2 + cos * s2));
+        Some((upper, [[cc, -ss, 0], [ss, cc, 0], [0, 0, 4096]].map(|r| r.map(s16))))
+    }
+
+    /// The 18 slots' turns on their parents for a frame's 49 channels (each an s16).
+    pub fn locals(p: &[i64]) -> [M; 18] {
+        let ch = |k: usize| p.get(k).copied().unwrap_or(0) as i16 as i32;
+        let mut l = [I; 18];
+        for (i, &s) in ANGLE_SLOTS.iter().enumerate() {
+            l[s] = euler(ch(19 + 3 * i), ch(20 + 3 * i), ch(21 + 3 * i));
+        }
+        for s in [2, 3, 7] {
+            l[s] = mul(&l[s], &QUARTER);
+        }
+        // the solver's frames: the root at the motion's place, the chest, the shoulders and the pelvis on its skeleton
+        let on = |p: &(M, [i32; 3]), r: &M, t: [i32; 3]| -> (M, [i32; 3]) {
+            let at = mv(&p.0, t);
+            (mul(&p.0, r), std::array::from_fn(|k| at[k] + p.1[k]))
+        };
+        let root = (l[0], [ch(0), ch(1), ch(2)]);
+        let chest = on(&root, &l[1], BASE[0]);
+        let shoulders = [on(&chest, &l[3], BASE[1]), on(&chest, &l[7], BASE[2])];
+        let pelvis = on(&root, &l[11], BASE[3]);
+        let limbs = [(&shoulders[0], 4, true), (&shoulders[1], 8, true), (&pelvis, 12, false), (&pelvis, 15, false)];
+        for (k, (base, upper, elbow)) in limbs.into_iter().enumerate() {
+            let v = toward([ch(3 + 3 * k), ch(4 + 3 * k), ch(5 + 3 * k)], &base.0, base.1, BASE[4 + k]);
+            if let Some((u, low)) = limb(v, ch(15 + k), elbow, l[upper + 1]) {
+                (l[upper], l[upper + 1]) = (u, low);
+            }
+        }
+        l
+    }
+}
+
 /// An accessory bone's neutral placement (see fit_extras): fitted bind transform, gravity-hung, or rigid.
 #[derive(Clone)]
 pub enum Mode {
@@ -674,6 +855,193 @@ mod tests {
         let (a, b) = ([73.0, -6.0, -74.0], [39.0, 54.0, 97.0]);
         assert!(kabsch(&[(a, a), (b, b), (a, a)]).is_none());
         assert!(kabsch(&[(a, a), (b, b), ([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])]).is_some());
+    }
+
+    /// King's frame as the PS1 logged it (PCSX-Redux, VS, P+0xF74 at the facing driver): the solver's turns.
+    #[test]
+    fn kings_pose_as_on_the_ps1() {
+        let c: [i64; 49] = [
+            44, -904, -126, -230, -1164, -448, 178, -1166, -710, -80, -186, 184, 176, -112, -446, 27596, 3720, 1194,
+            306, 0, 0, 0, -22850, 2892, -17696, 23850, 1052, 16288, 11648, 342, 30426, -31712, -1262, 16356, 400, -76,
+            16304, -1908, -442, 1342, -3690, -834, 36, 598, -922, -22384, -2244, -1108, -20482,
+        ];
+        let l = solver::locals(&c);
+        assert_eq!(l[4], [[22, 2554, -3224], [-2067, -2758, -2208], [-3570, 1615, 1336]]);
+        assert_eq!(l[5], [[-508, 4051, 0], [-4051, -508, 0], [0, 0, 4096]]);
+        assert_eq!(l[13], [[-281, -4078, 0], [4078, -281, 0], [0, 0, 4096]]);
+        assert_eq!(l[17], [[-1564, 3658, 975], [-3760, -1624, 59], [439, -874, 3977]]);
+    }
+
+    /// T3_BIN=<the disc image>: Gon's legs (45 %) where the PS1 puts them (PCSX-Redux, VS, Gon against Paul, after the
+    /// skeleton 0x8003AFCC: the 49 channels at 0x800A85E8, slot 0's matrix and place and slots 12-17's places at
+    /// P+0x8F4): his stance, walking forward and back, the crouch, his roll, f+4, d+4 and 3. Each slot's place from
+    /// slot 0, in its axes, within the PS1's own rounding ([`Skeleton::pose`]'s own limb lengths put them 126 units off).
+    #[test]
+    fn gons_legs_as_on_the_ps1() -> Result<()> {
+        let Ok(bin) = std::env::var("T3_BIN") else {
+            return Ok(());
+        };
+        let game = crate::disc::Game::load(&crate::disc::track1(bin)?)?;
+        let sk = Skeleton::new(game.rec.get(239).context("no Gon")?, Vec::new())?;
+        type Row = ([i64; 49], [i64; 12], [[i64; 3]; 6]);
+        let rows: [Row; 8] = [
+            // vsync 1720, frame 9
+            (
+                [
+                    0, -988, 0, -222, -878, -336, 180, -880, -396, -204, -136, -26, 202, -138, -92, 15644, 15114, 4826,
+                    -8218, 0, 0, 0, -18096, 5908, -16382, 18420, 0, 16382, 14862, -826, 27566, 32766, 0, 16384, 0, 0,
+                    16384, -7250, 90, 3632, 9054, -78, 5462, 832, 532, -21580, -726, 3828, -21602,
+                ],
+                [0, 0, -4096, 0, 4096, 0, 4096, 0, 0, -793, -445, -1],
+                [
+                    [-802, -374, -45],
+                    [-695, -240, -143],
+                    [-783, -71, -93],
+                    [-785, -375, 43],
+                    [-669, -244, 132],
+                    [-754, -72, 87],
+                ],
+            ),
+            // vsync 1905, frame 2
+            (
+                [
+                    0, -990, -30, -224, -876, -374, 178, -878, -426, -206, -150, -30, 200, -144, -140, 15858, 14890,
+                    4278, -8758, 0, 0, 0, -18078, 6286, -16382, 19120, 0, 16384, 14932, -854, 27134, -32768, 0, 16384,
+                    0, 0, 16384, -7250, 90, 3632, 9056, -78, 5462, 1140, 354, -21378, -726, 3706, -21586,
+                ],
+                [-6, 0, -4096, 0, 4096, 0, 4096, 0, -6, 658, -446, 3],
+                [
+                    [646, -375, -40],
+                    [750, -241, -142],
+                    [657, -76, -89],
+                    [669, -375, 46],
+                    [789, -247, 134],
+                    [705, -73, 90],
+                ],
+            ),
+            // vsync 2001, frame 3
+            (
+                [
+                    0, -1094, 150, -246, -1044, -192, 152, -1050, -268, -48, -146, -150, 44, -570, 958, 15696, 15018,
+                    3470, 3586, 0, 0, 0, -18780, 4418, -16382, 12558, -2864, 16384, 14498, -1460, 25524, -32768, 0,
+                    16384, 0, 0, 16384, -7250, 90, 3632, 9056, -78, 5462, -2020, 3678, -19648, 560, -16, -18688,
+                ],
+                [0, 0, -4096, 0, 4096, 0, 4096, 0, 0, -250, -493, 2],
+                [
+                    [-255, -421, -40],
+                    [-126, -272, -29],
+                    [-120, -76, -21],
+                    [-285, -430, 44],
+                    [-410, -277, 32],
+                    [-608, -264, 21],
+                ],
+            ),
+            // vsync 2100, frame 30
+            (
+                [
+                    0, -818, 0, -170, -808, -568, 120, -896, -738, -196, -120, 306, 204, -112, -412, 29284, -80, 1386,
+                    -6748, 0, 0, 0, -17782, 12450, -16382, 21846, 0, 16384, 15812, -1338, 20862, 32528, -1268, 10082,
+                    3364, 1606, 9126, 0, 0, -142, 0, 0, -142, 4332, 0, -27618, -1068, 722, -17790,
+                ],
+                [0, 0, -4096, 0, 4096, 0, 4096, 0, 0, -1647, -369, 2],
+                [
+                    [-1669, -298, -37],
+                    [-1618, -146, -154],
+                    [-1783, -61, -87],
+                    [-1625, -298, 40],
+                    [-1437, -252, 74],
+                    [-1467, -58, 90],
+                ],
+            ),
+            // vsync 2230, frame 28
+            (
+                [
+                    1322, -694, -1048, 1006, -324, -1434, 1824, -592, -1502, 1368, -204, -792, 1554, -110, -1506,
+                    21726, 10126, 1684, -4630, 1738, 0, -92, -17984, 10588, -19122, 17728, 926, 16476, 16988, 12,
+                    32182, -32614, -5086, 11442, 2974, -152, 10250, 74, 4746, -164, 38, -18, -118, 358, 2708, -24644,
+                    1488, 2828, -14724,
+                ],
+                [1573, -609, -3733, -38, 4040, -675, 3782, 294, 1545, -1090, -313, 471],
+                [
+                    [-1117, -243, 435],
+                    [-1041, -63, 404],
+                    [-1187, -98, 532],
+                    [-1073, -242, 512],
+                    [-878, -253, 493],
+                    [-866, -56, 487],
+                ],
+            ),
+            // vsync 2345, frame 23
+            (
+                [
+                    94, -1108, -856, -348, -938, -830, -36, -1422, -1062, -108, -1340, -1776, -18, -114, -834, 14280,
+                    8526, 15214, 8172, 0, -13520, 0, -29758, -7902, -13340, 15180, 2144, 28040, 20960, -4228, -25572,
+                    32766, 0, 16384, 0, 0, 16384, 0, 96, -8, 0, -90, 0, 1542, 1122, -16110, -376, -5254, -20322,
+                ],
+                [-3696, 0, -1769, 0, 4096, 0, 1768, 0, -3696, -688, -499, 459],
+                [
+                    [-607, -509, 441],
+                    [-472, -646, 394],
+                    [-304, -603, 300],
+                    [-645, -428, 448],
+                    [-622, -233, 459],
+                    [-708, -61, 411],
+                ],
+            ),
+            // vsync 2470, frame 26
+            (
+                [
+                    -4, -1116, 226, 148, -1032, 618, -502, -1082, 704, 96, -166, 30, -70, -168, 24, 22600, 3588, -352,
+                    2708, 0, -32468, 0, -14688, 4880, -12800, 16384, -8414, 16382, 9256, -2990, 29142, 32766, 0, 16384,
+                    0, 0, 16382, 0, 0, -100, 0, 0, -186, 66, 5548, -17844, -31942, -29886, 14632,
+                ],
+                [-738, 0, 4028, 0, 4096, 0, -4029, 0, -738, -927, -503, 451],
+                [
+                    [-869, -454, 484],
+                    [-920, -263, 491],
+                    [-837, -85, 479],
+                    [-885, -454, 397],
+                    [-927, -264, 429],
+                    [-845, -85, 406],
+                ],
+            ),
+            // vsync 2582, frame 16
+            (
+                [
+                    144, -1120, -456, -272, -1028, -142, -520, -1352, -736, 128, -258, -520, -374, -884, -408, 29674,
+                    13790, 3940, 3334, 0, 0, 0, 30876, -5480, -27150, -21330, 9084, 27054, -2774, 6262, 31046, -32768,
+                    0, 16384, 4420, 318, 2308, 0, 96, -8, 0, -90, 0, 4106, 7328, -17870, -4690, -2778, -12048,
+                ],
+                [694, 0, -4037, 0, 4096, 0, 4037, 0, 694, -609, -504, 469],
+                [
+                    [-574, -439, 430],
+                    [-685, -280, 390],
+                    [-584, -125, 456],
+                    [-551, -523, 411],
+                    [-747, -517, 386],
+                    [-669, -402, 245],
+                ],
+            ),
+        ];
+        for (c, s0, legs) in rows {
+            let s0 = s0.map(|v| v as f64);
+            // the solver's turns on Gon's own slot places, as the skeleton (0x8003AFCC) chains them
+            let l = solver::locals(&c).map(|m| m.map(|r| r.map(|v| v as f64 / 4096.0)));
+            let mut w = [(l[0], [0.0; 3]); 18];
+            for s in 1..18 {
+                let (pr, pt) = w[PARENT[s]];
+                w[s] = (mm(&pr, false, &l[s], false), add(&mv(&pr, false, &sk.row_t(OFFSET_ROW[s])?), &pt));
+            }
+            let (r0, t0) = w[0];
+            let m0 =
+                [[s0[0], s0[1], s0[2]], [s0[3], s0[4], s0[5]], [s0[6], s0[7], s0[8]]].map(|r| r.map(|v| v / 4096.0));
+            for (k, p) in legs.iter().enumerate() {
+                let ours = mv(&r0, true, &sub(&w[12 + k].1, &t0));
+                let ps1 = mv(&m0, true, &sub(&p.map(|v| v as f64), &[s0[9], s0[10], s0[11]]));
+                assert!(np::norm(&sub(&ours, &ps1)) < 5.0, "slot {}: {ours:?}, the PS1's {ps1:?}", 12 + k);
+            }
+        }
+        Ok(())
     }
 
     /// sin(ang(-5898)), the same on every platform (Python's math.sin on macOS gives one bit more)
