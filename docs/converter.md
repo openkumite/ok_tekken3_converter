@@ -28,9 +28,9 @@ t3_convert MODULE ARGS...                  # one module by hand (t3_convert list
 |---|---|---|
 | characters | `export_gltf` | `characters/model_NNN.glb`: skinned glTF, every animation at 60 fps (own and shared moves), the embu's; each animation's extras `channels`: every frame's 49 channels as the PS1 decodes them (0x80038B4C), the skin's extras `slots`: the 18 joint slots' places on their parents (P+0xF74, format 12) |
 | stages | `export_stages` | `stages/stage_NN.glb`: arenas, Tekken Force and Ball stages, sky, walls |
-| pictures | `export_pictures` | `pictures/`: the 2D art as PNG, index maps and palettes |
+| pictures | `export_pictures` | `pictures/`: the 2D art as PNG, index maps and palettes; `names/model_NNN_commands_index.png`: each fighter's command list sheet (letters and words in 1-bit planes, format 20) |
 | media | `export_media` | `audio/` (WAV sounds, FLAC music), `video/` (Motion-JPEG AVI + FLAC soundtrack) |
-| gamedata | `export_gamedata` | `gamedata/*.json`: movesets, commands, hit paths, reactions, rules, roster, stages, music, AI, camera, HUD layout |
+| gamedata | `export_gamedata` | `gamedata/*.json`: movesets, commands, hit paths, reactions, rules, roster, stages, music, AI, camera, HUD layout; `screens.json` `hud.commands`: the command lists and their screen (format 20) |
 | effects | `export_effects` | `pictures/effects/`: hit sparks and effects in the game's palettes (reads pictures and gamedata) |
 | theater | `export_theater` | `gamedata/theater.json`, `pictures/theater/` |
 | shadows | `export_shadows` | `gamedata/shadows.json` |
