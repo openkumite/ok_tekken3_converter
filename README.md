@@ -21,7 +21,7 @@ The Tekken 3 pack is the base: the Tekken 2 fighters (ok_tekken2_converter) and 
 use ok_converter_common::io::{Ctx, StdDisc, StdFs};
 
 let ctx = Ctx { out: &StdFs("OUT".into()), log: &|line| println!("{line}"), jobs: 4 };
-let manifest = ok_tekken3_converter::convert_all::convert_resumable(&ctx, &StdDisc(bin.into()), track2, now)?;
+let manifest = ok_tekken3_converter::convert_all::convert_resumable(&ctx, &StdDisc(bin.into()), track2, &[], now)?;
 ```
 
 `convert_resumable` converts everything into a `Vfs` (a folder, or the pack file the browser keeps) and writes
@@ -34,7 +34,11 @@ The disc image is in any format ok_converter_common's `disc` module reads: a `.c
 `.ccd`/`.img`, `.mds`/`.mdf`, `.ecm`, a popstation `EBOOT.PBP`, or an `.iso`; or any of them in an archive (`.zip`,
 `.7z`, `.tar`, `.gz`, `.xz`, `.zst`: unpacked into a temporary file first). The CD-audio track 2 is the menu music.
 An `.iso` keeps only each sector's 2048 bytes of data: the XA music and the movies are not in it, so the conversion
-leaves them out and the manifest's `source.missing` says so; the fingerprint is the same. The output is about 1.4 GB.
+leaves them out and the manifest's `source.missing` says so; the fingerprint is the same. The output is about 1.7 GB.
+
+A conversion can leave out what the game plays without (`convert_all::OPTIONAL`; `skip`, the developer tool's
+`--skip`): `endings` (the ending movies, 250 MB), `opening` (34 MB), `movies` (the prologue, 7 MB) and `music`
+(730 MB). The manifest's `skipped` names them; the fingerprint is the same.
 
 ## Repository
 
