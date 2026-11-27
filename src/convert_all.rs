@@ -261,9 +261,10 @@ fn canonical_glb(data: &[u8]) -> Result<Vec<u8>> {
 /// channels and each body's joint slots in the glb; 13: Doctor B.'s mist's own palette, effects.json `mist`; 14:
 /// Gon's and Doctor B.'s model sizes in Tekken Tag's roster `models`; 15: the sparks' and floor flames' pictures,
 /// effects.json `ember`, `ember_end`, `floor_flame_end`; 16: the floors' vertex colours, the stages' `floor_shading`;
-/// 17: the Tekken Force stages' `floor_shading` too, its modes 3 and 4's numerators). A full conversion sets it; a
-/// refresh keeps the one there (an older conversion stays one).
-pub const FORMAT: i64 = 17;
+/// 17: the Tekken Force stages' `floor_shading` too, its modes 3 and 4's numerators; 18: the HUD's FREE PLAY,
+/// screens.json `under_bar.push.free_play`). A full conversion sets it; a refresh keeps the one there (an older
+/// conversion stays one).
+pub const FORMAT: i64 = 18;
 
 /// Adds the format (when there is none) and the fingerprint, writes manifest.json; the manifest.
 pub fn write_manifest(out: &dyn Vfs, mut manifest: Map<String, Value>) -> Result<Value> {

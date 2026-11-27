@@ -1605,6 +1605,8 @@ fn fight_hud(exe: &Exe, rec: &[Vec<u8>]) -> Result<Value> {
     let (plate_dy, timer_x, infinity, time_x) = (i(0x8004E9A0)?, i(0x8003D9A0)?, i(0x8004E178)?, imm(&r5, 0x800B1AB4)?);
     let marks: Vec<String> = strip_fmt(&r5.cstr(0x800B0574), "cfHV").chars().map(String::from).collect();
     let push = exe.u32s(0x8002213C, 4)?;
+    // (0x8004EF20: in the frames of bit 0x40 the blink shows the credit text instead, FREE PLAY with a pad in)
+    let free_play = exe.u32s(0x8002216C, 2)?;
     let blink = |e: &Exe, a: i64| -> Result<String> { Ok(format!("frame & 0x{:X}", imm(e, a)?)) };
     // Team Battle's members (record 5 0x800B1764): per side a person per member from x (0x800B17C8 / 0x800B17C4)
     // stepping (0x800B17CC / 0x800B17E8), a quad u..u + w (0x800B17D4, 0x800B17D8) from the y of the lui at
@@ -1671,7 +1673,9 @@ fn fight_hud(exe: &Exe, rec: &[Vec<u8>]) -> Result<Value> {
                       "score_colours": [i(0x8004ECB0)?, i(0x8004ECCC)?],
                       "centre_x": exe.s16s(0x80021FBC + 4, 2)?,
                       "push": {"texts": [s(push[0]), s(push[2])],
-                               "half_width": [push[1], push[3]], "colour": i(0x8004EBCC)?, "blink": blink(exe, 0x8004EF14)?},
+                               "half_width": [push[1], push[3]], "colour": i(0x8004EBCC)?, "blink": blink(exe, 0x8004EF14)?,
+                               "free_play": {"text": s(free_play[0]), "half_width": free_play[1],
+                                             "while": blink(exe, 0x8004EF20)?}},
                       "stage": {"routine": "0x800B19B0 (record 5)", "format": strip_fmt(&r5.cstr(0x800B0550), "cfHV"),
                                 "final": strip_fmt(&r5.cstr(0x800B0564), "cfHV"), "colour": imm(&r5, 0x800B1A84)?,
                                 // (from final_from: STAGE while stage_while, else FINAL)
