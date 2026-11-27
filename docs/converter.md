@@ -26,7 +26,7 @@ t3_convert MODULE ARGS...                  # one module by hand (t3_convert list
 
 | `--only` name | Module (`src/`) | Writes |
 |---|---|---|
-| characters | `export_gltf` | `characters/model_NNN.glb`: skinned glTF, every animation at 60 fps (own and shared moves), the embu's; each animation's extras `channels`: every frame's 49 channels as the PS1 decodes them (0x80038B4C), the joints turned as the PS1's pose solver turns them (0x8003AD10, on its own skeleton, format 19), the skin's extras `slots`: the 18 joint slots' places on their parents (P+0xF74, format 12) |
+| characters | `export_gltf` | `characters/model_NNN.glb`: skinned glTF, every animation at 60 fps (own and shared moves), the embu's; each animation's extras `channels`: every frame's 49 channels as the PS1 decodes them (0x80038B4C), the skin's extras `slots`: the 18 joint slots' places on their parents (P+0xF74, format 12) |
 | stages | `export_stages` | `stages/stage_NN.glb`: arenas, Tekken Force and Ball stages, sky, walls |
 | pictures | `export_pictures` | `pictures/`: the 2D art as PNG, index maps and palettes |
 | media | `export_media` | `audio/` (WAV sounds, FLAC music), `video/` (Motion-JPEG AVI + FLAC soundtrack) |

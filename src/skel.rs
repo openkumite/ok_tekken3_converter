@@ -40,6 +40,8 @@ pub const MESH_SLOT: [(usize, usize); 19] = [
 pub const OFFSET_ROW: [usize; 18] = [0, 1, 19, 11, 12, 13, 14, 15, 16, 17, 18, 3, 5, 6, 7, 8, 9, 10];
 /// slot -> parent slot (slot 0 has none)
 pub const PARENT: [usize; 18] = [0, 0, 1, 1, 3, 4, 5, 1, 7, 8, 9, 0, 11, 12, 13, 11, 15, 16];
+pub const ANGLE_SLOTS: [usize; 10] = [0, 1, 11, 2, 3, 7, 6, 10, 14, 17];
+pub const M0: M3 = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
 pub const MAIN_ROWS: [usize; 19] = [0, 1, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
 
 /// A world (or bind) transform: rotation, translation.
@@ -64,6 +66,18 @@ pub fn rot_zyx(ax: f64, ay: f64, az: f64) -> M3 {
         [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
         [-sy, sx * cy, cx * cy],
     ]
+}
+
+#[allow(non_snake_case)]
+pub fn Rz(t: f64) -> M3 {
+    let (s, c) = np::sin_cos(t);
+    [[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]
+}
+
+#[allow(non_snake_case)]
+pub fn Rx(t: f64) -> M3 {
+    let (s, c) = np::sin_cos(t);
+    [[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]]
 }
 
 /// Tekken 3's pose solver (0x8003AD10) in the PS1's integers: a frame's 49 channels to the 18 slots' turns on their
@@ -303,6 +317,33 @@ impl Skeleton {
         self.t.get(r).copied().with_context(|| format!("the model has no row {r}"))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn ik(&self, x: &Tr, target: &[i64], off: V3, a: f64, b: f64, twist: i64, knee: bool) -> (M3, M3) {
+        let (r, t) = x;
+        let tg = [target[0] as f64, target[1] as f64, target[2] as f64];
+        let d = sub(&mv(r, true, &sub(&tg, t)), &off);
+        let l = np::norm(&d);
+        if l < 1e-6 {
+            return (I3, I3);
+        }
+        let (nx, ny, nz) = (d[0] / l, d[1] / l, d[2] / l);
+        let rmin = if nx > -0.9999 {
+            let k = 1.0 / (1.0 + nx);
+            [[nx, -ny, -nz], [ny, 1.0 - ny * ny * k, -ny * nz * k], [nz, -ny * nz * k, 1.0 - nz * nz * k]]
+        } else {
+            [[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]]
+        };
+        let u = mm(&rmin, false, &Rx(ang(twist as f64)), false);
+        if l >= a + b - 1e-6 {
+            return (u, I3);
+        }
+        let al = libm::acos(((a * a + l * l - b * b) / (2.0 * a * l)).clamp(-1.0, 1.0));
+        let th = if knee { -al } else { al };
+        let u = mm(&u, false, &Rz(th), false);
+        let (s, c) = np::sin_cos(-th);
+        (u, Rz(libm::atan2(l * s, l * c - a)))
+    }
+
     /// P: 49 channels. Returns per row world transforms (character space, y down).
     /// springs: a Springs state to advance one frame (accessory links); else they hold neutral.
     pub fn pose(&self, p: &[i64], springs: Option<&mut Springs>) -> Result<Pose> {
@@ -310,13 +351,29 @@ impl Skeleton {
             anyhow::bail!("a pose has fewer than 49 channels");
         }
         let t = |s: usize| self.row_t(OFFSET_ROW[s]);
-        // the slots' turns from the PS1's pose solver, its own skeleton's limbs for every body (Gon's legs too)
-        let l = solver::locals(p).map(|m| m.map(|r| r.map(|v| v as f64 / 4096.0)));
+        let mut l = [I3; 18];
+        for (i, &s) in ANGLE_SLOTS.iter().enumerate() {
+            l[s] = rot_zyx(p[19 + 3 * i] as f64, p[20 + 3 * i] as f64, p[21 + 3 * i] as f64);
+        }
+        for s in [2, 3, 7] {
+            l[s] = mm(&l[s], false, &M0, false);
+        }
+        let comp = |x: &Tr, rl: &M3, tl: &V3| (mm(&x.0, false, rl, false), add(&mv(&x.0, false, tl), &x.1));
         let mut w: [Option<Tr>; 18] = Default::default();
         w[0] = Some((l[0], [p[0] as f64, p[1] as f64, p[2] as f64]));
-        for s in 1..18 {
-            let (pr, pt) = w[PARENT[s]].context("a slot's parent is not posed")?;
-            w[s] = Some((mm(&pr, false, &l[s], false), add(&mv(&pr, false, &t(s)?), &pt)));
+        let wp = |w: &[Option<Tr>; 18], s: usize| w[PARENT[s]].context("a slot's parent is not posed");
+        for s in [1, 11, 3, 7] {
+            w[s] = Some(comp(&wp(&w, s)?, &l[s], &t(s)?));
+        }
+        let w3 = w[3].context("slot 3")?;
+        let w7 = w[7].context("slot 7")?;
+        let w11 = w[11].context("slot 11")?;
+        (l[4], l[5]) = self.ik(&w3, &p[3..6], t(4)?, t(5)?[0], t(6)?[0], p[15], false);
+        (l[8], l[9]) = self.ik(&w7, &p[6..9], t(8)?, t(9)?[0], t(10)?[0], p[16], false);
+        (l[12], l[13]) = self.ik(&w11, &p[9..12], t(12)?, t(13)?[0], t(14)?[0], p[17], true);
+        (l[15], l[16]) = self.ik(&w11, &p[12..15], t(15)?, t(16)?[0], t(17)?[0], p[18], true);
+        for s in [2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 15, 16, 17] {
+            w[s] = Some(comp(&wp(&w, s)?, &l[s], &t(s)?));
         }
         let n = self.rows.len();
         let mut out: Pose = vec![None; n.max(21)];
@@ -818,7 +875,7 @@ mod tests {
     /// T3_BIN=<the disc image>: Gon's legs (45 %) where the PS1 puts them (PCSX-Redux, VS, Gon against Paul, after the
     /// skeleton 0x8003AFCC: the 49 channels at 0x800A85E8, slot 0's matrix and place and slots 12-17's places at
     /// P+0x8F4): his stance, walking forward and back, the crouch, his roll, f+4, d+4 and 3. Each slot's place from
-    /// slot 0, in its axes, within the PS1's own rounding (his own limbs' lengths put them 126 units off).
+    /// slot 0, in its axes, within the PS1's own rounding ([`Skeleton::pose`]'s own limb lengths put them 126 units off).
     #[test]
     fn gons_legs_as_on_the_ps1() -> Result<()> {
         let Ok(bin) = std::env::var("T3_BIN") else {
@@ -968,14 +1025,18 @@ mod tests {
         ];
         for (c, s0, legs) in rows {
             let s0 = s0.map(|v| v as f64);
-            let pose = sk.pose(&c, None)?;
-            let at =
-                |s: usize| MESH_SLOT.iter().find(|x| x.1 == s).and_then(|x| pose[x.0]).context("a slot is not posed");
-            let (r0, t0) = at(0)?;
+            // the solver's turns on Gon's own slot places, as the skeleton (0x8003AFCC) chains them
+            let l = solver::locals(&c).map(|m| m.map(|r| r.map(|v| v as f64 / 4096.0)));
+            let mut w = [(l[0], [0.0; 3]); 18];
+            for s in 1..18 {
+                let (pr, pt) = w[PARENT[s]];
+                w[s] = (mm(&pr, false, &l[s], false), add(&mv(&pr, false, &sk.row_t(OFFSET_ROW[s])?), &pt));
+            }
+            let (r0, t0) = w[0];
             let m0 =
                 [[s0[0], s0[1], s0[2]], [s0[3], s0[4], s0[5]], [s0[6], s0[7], s0[8]]].map(|r| r.map(|v| v / 4096.0));
             for (k, p) in legs.iter().enumerate() {
-                let ours = mv(&r0, true, &sub(&at(12 + k)?.1, &t0));
+                let ours = mv(&r0, true, &sub(&w[12 + k].1, &t0));
                 let ps1 = mv(&m0, true, &sub(&p.map(|v| v as f64), &[s0[9], s0[10], s0[11]]));
                 assert!(np::norm(&sub(&ours, &ps1)) < 5.0, "slot {}: {ours:?}, the PS1's {ps1:?}", 12 + k);
             }
