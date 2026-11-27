@@ -263,9 +263,10 @@ fn canonical_glb(data: &[u8]) -> Result<Vec<u8>> {
 /// effects.json `ember`, `ember_end`, `floor_flame_end`; 16: the floors' vertex colours, the stages' `floor_shading`;
 /// 17: the Tekken Force stages' `floor_shading` too, its modes 3 and 4's numerators; 18: the HUD's FREE PLAY,
 /// screens.json `under_bar.push.free_play`; 19: Tekken Tag's crossover bodies' limbs turned by the PS1's pose
-/// solver on its own skeleton (Gon's and Doctor B.'s legs), the pack itself as 18's). A full conversion sets it; a
+/// solver on its own skeleton (Gon's and Doctor B.'s legs), the pack itself as 18's; 20: the command lists, screens.json
+/// `hud.commands` and each fighter's sheet `names/model_NNN_commands_index.png`). A full conversion sets it; a
 /// refresh keeps the one there (an older conversion stays one).
-pub const FORMAT: i64 = 19;
+pub const FORMAT: i64 = 20;
 
 /// Adds the format (when there is none) and the fingerprint, writes manifest.json; the manifest.
 pub fn write_manifest(out: &dyn Vfs, mut manifest: Map<String, Value>) -> Result<Value> {

@@ -362,6 +362,11 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str) -> Result<()> {
         }
         let (o, z) = (u32le(t, 4) as usize, u32le(t, 8) as usize);
         let tims = tim::walk_tims(py_slice(t, o, o.saturating_add(z)));
+        // the command list's sheet at (80, 16): 4 planes of 1 bit (letters and the move names' words), one by CLUT
+        if let Some(x) = tims.iter().find(|x| x.bpp == 4 && x.img.0 == 80 && x.img.1 == 16) {
+            let png = index_png(&x.img, 4).with_context(|| format!("model {m}: the command list's sheet"))?;
+            save_png(ctx.out, &join(out, &format!("names/model_{m:03}_commands_index.png")), &png)?;
+        }
         let Some(name) = tims.into_iter().find(|x| x.bpp == 4 && x.img.0 == 80 && x.img.1 == 0) else { continue };
         let name = Pic::from(name);
         let Some(b) = name.img.as_ref() else { continue };

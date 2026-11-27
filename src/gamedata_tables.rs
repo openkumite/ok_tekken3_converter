@@ -1403,6 +1403,7 @@ pub fn screens(exe: &Exe, rec: &[Vec<u8>]) -> Result<Value> {
     }
     let mut hud = fight_hud(exe, rec)?;
     hud["practice"] = practice(exe, rec)?;
+    hud["commands"] = commands(exe, rec)?;
     let vs = versus(exe, rec)?;
     let wall_rows: Vec<Value> = (0..8).map(|r| bytes_list(r9.bytes(0x801185BC + 8 * r, 8))).collect();
     let mut places = Vec::new();
@@ -2149,6 +2150,96 @@ pub fn faces(exe: &Exe) -> Result<Value> {
               "pupils": {"character": 17, "angle": "a = atan2(L.y, L.x) in 4096ths, L = head world rotation^T (opponent head - own head)",
                          "e": "a < 0x800: max(-(a / 60), -17); else min(-((a - 0xF00) / 60), 17)", "limit": 17, "divisor": 60},
               "models": models}))
+}
+
+/// The command list (0x80078550, opened by the pause's COMMAND 0x80078DF8 and Practice's COMMAND LIST 0x80078BCC):
+/// each fighter's moves from its texture record (model record + 2, part 4, copied to 0x800A3628 by 0x800784E4), drawn
+/// by 0x80077724 with that record's word sheet and record 10's pad pictures. Places and colours are immediates in
+/// that code.
+fn commands(exe: &Exe, rec: &[Vec<u8>]) -> Result<Value> {
+    let i = |a: i64| imm(exe, a);
+    let lui = |a: i64| -> Result<i64> { Ok(exe.u32(a)? & 0xFFFF) };
+    // a colour of `lui hi; ori lo` (the low 24 bits)
+    let rgb_at = |a: i64| -> Result<Value> { Ok(rgb((exe.u32(a)? & 0xFF) << 16 | imm(exe, a + 4)?)) };
+    // the lists: a count, then each move's name and command, NUL-ended; bytes 1-0x1F and 0xA1-0xC3 are the sheet's
+    // words, 0x80-0x90 the arrows, 0x91-0xA0 the buttons (bit 0 1, bit 1 2, bit 2 3, bit 3 4), 0xFC a new line
+    let mut lists = Map::new();
+    for m in (71..276).step_by(4) {
+        let t = rec.get(m + 2).map_or(&[][..], |r| &r[..]);
+        let w = Exe::with_base(t, 0);
+        if w.u32(0).unwrap_or(0) < 5 {
+            continue;
+        }
+        let (o, z) = (w.u32(4 + 8 * 4)?, w.u32(8 + 8 * 4)?);
+        let d = w.bytes(o, z as usize);
+        let (n, mut at) = (d.first().copied().unwrap_or(0) as usize, 1);
+        let mut moves = Vec::new();
+        for _ in 0..n {
+            let mut pair = Vec::new();
+            for _ in 0..2 {
+                let end = d
+                    .get(at..)
+                    .and_then(|s| s.iter().position(|&b| b == 0))
+                    .context("a command list's text runs out")?;
+                pair.push(bytes_list(&d[at..at + end]));
+                at += end + 1;
+            }
+            moves.push(Value::Array(pair));
+        }
+        lists.insert(m.to_string(), json!(moves));
+    }
+    // the printer's fonts (0x80027AC0: advance, line, ..., tpage): 0 the sheet's letters, 1 the pad pictures'
+    let (sheet_page, _) = tpage_xy(exe.u16(0x80027AC0 + 8)?);
+    let (icon_page, _) = tpage_xy(exe.u16(0x80027ADC)?);
+    // the arrows (0x800775C0): 0x80 + d, d & 7 picks (u, v, flips: bit 0 mirrored, bit 1 upside down) of 0x80027AE8,
+    // 0x90 the ninth; d & 8: the tapped colour
+    let arrows: Vec<Value> = (0..9)
+        .map(|k| Ok(json!({"u": exe.u16(0x80027AE8 + 4 * k)? & 0xFF, "flip": exe.u16(0x80027AE8 + 4 * k + 2)?})))
+        .collect::<Result<_>>()?;
+    let footer = strip_fmt(&exe.cstr_n(0x80027C1C, 64), "p");
+    Ok(json!({
+        "routine": "0x80078550", "printer": "0x80077724", "lists": lists,
+        "sheet": {"pictures": "pictures/names/model_NNN_commands_index.png (texture record TIM at 80,16)",
+                  "page": sheet_page, "u": 0x40, "v": 0x10, "advance": exe.s16(0x80027AC0)?, "line": exe.s16(0x80027AC0 + 2)?,
+                  // code c: plane (CLUT 384 + 16 * plane, 507) of the 1-bit planes
+                  "plane_clut": clut_xy(0x7ED8), "right_u": 0x7C,
+                  // (0x800989F8: each word's width in letters, codes 1.. then 0xA2..)
+                  "word_widths": bytes_list(exe.bytes(0x800989F8, 66))},
+        "icons": {"page": icon_page, "v": 0xE0, "w": 20, "h": 32, "dy": -12, "advance": 20,
+                  "buttons": {"u": 0, "clut": clut_xy(0x7F30), "outline_u": 0x14, "outline_clut": clut_xy(0x7FB1)},
+                  "arrows": arrows, "tapped_clut": clut_xy(0x7FB3), "held_clut": clut_xy(0x7FB4)},
+        // the text's colour (0x707070 of 0x80: a little darker than the sheet's white)
+        "tint": rgb_at(0x80078800)?,
+        // P2's list to the right (x + 0xB8); the panel, the lines under the heading and over the footer
+        "panel": {"x": [0, i(0x800785FC)?], "rect": [i(0x80078B68)?, lui(0x80078B64)?, i(0x80078B70)?, lui(0x80078B6C)?],
+                  "colour": rgb_at(0x80078B78)?,
+                  "lines": [[2, lui(0x80078B28)?, i(0x80078B10)?, lui(0x80078B0C)?],
+                            [2, lui(0x80078B4C)?, i(0x80078B10)?, lui(0x80078B0C)?]],
+                  "line_colour": rgb_at(0x80078B14)?,
+                  "heading": {"word": 1, "x": i(0x80078AFC)?, "y": i(0x80078B00)?},
+                  // (the rows drawn in the area 0x80078BCC sets: from y 0x74, 0x13F high)
+                  "clip": [i(0x80078D70)?, i(0x80078D70)? + i(0x80078D78)?],
+                  "footer": {"parts": printf_parts(&footer), "font": 0,
+                             "colours": [i(0x80078FA4)?, i(0x80078FAC)?, i(0x80078FA4)?, i(0x80078FAC)?],
+                             "x": 6, "y": i(0x80078FA0)?}},
+        "rows": {"y": i(0x80078738)?, "pitch": i(0x80078AF0)?, "count": i(0x800787E8)?,
+                 "text_x": i(0x800788A0)?, "name_dy": i(0x800788A4)?, "command_dy": i(0x800788CC)?,
+                 // a name of 0x1D letters or more: its first 0x1C on the row's top line, the rest 0xC under it
+                 "long": i(0x8007884C)?, "first_part": i(0x80078878)?, "long_dy": i(0x80078898)?,
+                 "border": {"rect": [2, -3, i(0x80078A20)?, lui(0x80078A1C)?], "colour": rgb_at(0x80078A28)?},
+                 "box": {"rect": [3, -2, i(0x800789EC)?, lui(0x800789E8)?]},
+                 "band": {"rect": [3, -2, i(0x8007899C)? - 3, i(0x800789AC)? + 2]},
+                 "colours": {"box": rgb_at(0x80078980)?, "band": rgb_at(0x80078978)?},
+                 // Hwoarang (character 6): his stances' moves in their own colours, set k from move from[k] (6-13,
+                 // 14-), its first move a flat heading (a band in `heading`, the box 180 wide, no border)
+                 "stances": {"character": i(0x80078910)?, "from": [-i(0x8007891C)?, i(0x80078940)?],
+                             "box": [rgb_at(0x80078928)?, rgb_at(0x8007894C)?],
+                             "band": [rgb_at(0x80078930)?, rgb_at(0x80078954)?], "heading": rgb_at(0x80078968)?},
+                 // Mokujin (character 15): one row, at 0xF6
+                 "single": {"character": i(0x800787E0)?, "y": i(0x800787EC)?},
+                 // up / down one move, right / left five (sound 0x546C), the list easing a third of the way a frame
+                 "scroll": {"step": [1, 5], "ease": 3}},
+    }))
 }
 
 /// Practice mode (record 6, overlay slot A at 0x800B0548): the menus (0x800B5318 / 0x800B545C / 0x800B5918 /
