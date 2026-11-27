@@ -211,14 +211,15 @@ pub fn parse_floor(texrec: &[u8], cols: usize, rows: usize) -> Result<Vec<FloorT
 
 /// The floor's vertex colours (scene extras `floor_shading`), as the floor routines write them into its POLY_GT4s each
 /// frame: the mode (u16 after the floor map, 0x8004870C) picks 0x80048E58 (0: a fade with depth by the shade, the
-/// s16 after it) or 0x80049848 (spotlights: 1 one on each fighter, 2 one on their midpoint).
-fn floor_shading(texrec: &[u8], game: &disc::Game, stage: usize) -> Result<Option<Value>> {
+/// s16 after it) or 0x80049848 (spotlights: 1 one on each fighter, 2 one on their midpoint; Tekken Force's 3 one on
+/// the player, 4 on its final stage, 0x800AFAAC = 4, one beside the eye).
+fn floor_shading(texrec: &[u8], game: &disc::Game, stage: usize, tile: i64) -> Result<Option<Value>> {
     let Some(o) = floor_part(texrec)? else { return Ok(None) };
     let fade = game.at(0x8001DF6C).get(..1024).context("the floor's fade table is past the EXE")?;
     Ok(Some(json!({
-        "mode": u16at(texrec, o + 804)?, "shade": i16at(texrec, o + 806)?, "tile": 1800,
-        // 0x80049BD0: modes 1 and 2's numerators
-        "spot": [0x0F20_0000, 0x2FAF_0800],
+        "mode": u16at(texrec, o + 804)?, "shade": i16at(texrec, o + 806)?, "tile": tile,
+        // 0x80049BD0: modes 1 to 4's numerators
+        "spot": [0x0F20_0000, 0x2FAF_0800, 0x1E84_8000, 0x18B8_2000],
         // 0x800481BC: mode 2's most (0x800ADD94); with True Ogre in the fight (0x80051304) mode 0 is mode 2 with
         // 0x80 on stages 13 and 19 (0x80048190)
         "cap": 192, "true_ogre_cap": if matches!(stage, 13 | 19) { 128 } else { 192 },
@@ -228,7 +229,10 @@ fn floor_shading(texrec: &[u8], game: &disc::Game, stage: usize) -> Result<Optio
         "note": "per vertex of the 11 x 11 grid round the fighters' midpoint snapped to tiles (0x80049988), colour c, 128 = 1, \
                  Gouraud. 1: min(254, spot[0] / d1^2 + spot[0] / d2^2), d to each fighter's root (P+0xF68; x, z, game units); \
                  2: min(cap, spot[1] / d^2) to their midpoint; 0: 128 + fade[min(1023, (max(0, SZ - D) x (0x4000000 / \
-                 fade_depth) >> 16))] x shade >> 7 in 0..254, D the eye's distance to the midpoint (x, z; GTE square root)"
+                 fade_depth) >> 16))] x shade >> 7 in 0..254, D the eye's distance to the midpoint (x, z; GTE square root). \
+                 Tekken Force: 3: min(254, spot[2] / d^2) to the player's root, 4 (its final stage): min(254, spot[3] / d^2) \
+                 to (the eye's x, -2000); the grid round the player's root (z + tile / 2), the fade's round (the midpoint's \
+                 x, 325) with D the eye's |z|"
     })))
 }
 
@@ -819,8 +823,7 @@ pub fn run(ctx: &Ctx, disc: &dyn DiscFile, out: &str, only: Option<Vec<usize>>) 
         // STAGE_Y
         let base_y = if k < 15 { u16at(game.at(0x80025138 + 4 * k as u32), 0)? } else { 0 };
         let geo = st.geo.map(rec).transpose()?;
-        // shortcut: the Force stages' floors not lit (mode 3's light, 0x800B297C, not traced); upgrade: as the arenas'
-        let shading = if k < 15 || st.tex == BALL_RECORD { floor_shading(rec(st.tex)?, &game, k)? } else { None };
+        let shading = floor_shading(rec(st.tex)?, &game, k, st.tile)?;
         let (no, nt, (ah, aw)) = convert(
             geo,
             rec(st.tex)?,

@@ -321,9 +321,13 @@ against golden traces of the prototype (`reference/camera_golden` → `assets/te
     - mode 2 (stages 3, 8, 9, 12, 14): `min(cap, 0x2FAF0800 / d²)` to the roots' midpoint, cap `0x800ADD94` = 0xC0.
       With True Ogre in the fight (`0x80051304`: a fighter's id 20) mode 0 stages take mode 2, cap 0x80 on stages 13
       and 19.
-    - modes 3 (Force stage 3: an actor from `0x800B297C`) and 4 (Force with `0x800AFAAC` = 4: x of the eye, z −2000).
-    - All checked against the PS1's values on stages 0, 6 and 9 (PCSX-Redux breakpoints at `0x8004A12C` /
-      `0x8004960C`): every vertex exact.
+    - Tekken Force (battle type 8; 2500-unit tiles, Force stages' glbs carry it too): mode 3 (stage 3, record 53):
+      `min(254, 0x1E848000 / d²)` to the player's root (`0x800B297C` returns `0x800B65C8`, P1); on the final stage
+      (`0x800AFAAC` = 4, the stage index) any mode is 4: `min(254, 0x18B82000 / d²)` to (the eye's x, −2000). Those
+      lay the grid round the player's root, z + tile / 2 (`0x80049928`); the fade (stages 1, 2, 4) round (the roots'
+      midpoint x, 325) (`0x80048FDC`) with D the eye's |z| (`0x800492A0`).
+    - All checked against the PS1's values on stages 0, 6 and 9 and Force stages 1, 3 and the final one (PCSX-Redux
+      breakpoints at `0x8004A12C` / `0x8004960C`): every vertex exact.
 - **Backdrop drum** `0x8006D7CC` → `0x8006D014` → `0x8006CC28`:
   - a world-oriented object in units of 8 world units (translation `>> 3`), centred on the fighters' root
     midpoint (x, z), its base ring `STAGE_Y` below the floor (per-stage table `0x80025138`, one u16 per 4 bytes
@@ -865,7 +869,7 @@ Full spec, including all 30 profiles: [ai.md](ai.md).
   - The equivalent 3D wall is at z = 3000, with panels 1280 wide and 736 tall; panel n spans
     x = 1280n − 3680. `export_stages` builds the wall this way.
 - **Floor:** the normal floor code with the Force constants. Records 51, 52 and 54 use the variant `0x80048E58`
-  (window pinned to z −5000…2500); record 53 follows the player (`0x80049848`).
+  (window pinned to z −5000…2500); record 53 and the final stage follow the player (`0x80049848`; §5.4).
 - **Camera:** eye y −3500, z −7000, pitch 15° down, H = 500 (overlay camera key at `0x800B4F78`).
 - **Boss routes:** table `0x800B6378` in record 7 lists four bosses per selection. The last boss is always
   Heihachi, except for Mokujin, who meets Mokujin.
@@ -926,7 +930,7 @@ All three below are now fixed in the tools and in [disc.md](disc.md).
 - **Camera:** the start-of-round yaw-freeze trigger; the first-round flag; the rarer character-specific camera
   triggers; the Ball and Force overlay cameras.
 - **AI:** where Ogre becomes True Ogre in Arcade; battle type 3; the Tekken Ball AI hooks.
-- **Tekken Force:** the enemy variant field; the floor shading of variant `0x80048E58`.
+- **Tekken Force:** the enemy variant field.
 - **Other:** which mode handler is title vs main menu vs options (3–5); what record 0's attract scene shows.
   (Answered: the voice rows are by actor +0x1A, the selection descriptor's byte 8, not the character id: Panda on,
   and Ogre / True Ogre, take the row after their id's.)
