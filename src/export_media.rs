@@ -15,7 +15,8 @@
 //!                              scanning for STR frames whose frame counter restarts: Motion-JPEG frames and the
 //!                              soundtrack (ok_converter_common::psx). The frame rate (15, 20 or 30) is frames / audio length.
 //!   OUTDIR/index.json          what the viewer lists; each SFX sample also lists the VAB tones that play it
-//!                              ([program, min key, max key]) so engines can map SePlay codes to files.
+//!                              ([program, min key, max key]) so engines can map SePlay codes to files, and a
+//!                              looping sample its `loop` (seconds it goes back to; it plays until keyed off).
 
 use crate::disc::{BNS_COUNT, BNS_TABLE_OFF, Iso, py_slice, u32le};
 use crate::export_gltf::NAMES;
@@ -94,6 +95,22 @@ pub fn spu_adpcm(b: &[u8]) -> Vec<i16> {
     out
 }
 
+/// Where a looping sample loops back to (its samples; the SPU repeats it until its voice is keyed off): a sample whose
+/// end block (flag 1) also repeats (flag 2) goes back to its last loop start (flag 4), or to its start without one.
+pub fn spu_loop(b: &[u8]) -> Option<usize> {
+    let mut start = 0;
+    for (n, blk) in b.as_chunks::<16>().0.iter().enumerate() {
+        let flag = blk[1];
+        if flag & 4 != 0 {
+            start = n * 28;
+        }
+        if flag & 1 != 0 && n != 0 {
+            return (flag & 2 != 0).then_some(start);
+        }
+    }
+    None
+}
+
 /// One VAB tone: (program, min key, centre, fine, vag index, max key, tone index in the program: what SePlay's code
 /// names, SsUtKeyOnV 0x800885D8).
 type Tone = (usize, u8, u8, u8, usize, u8, usize);
@@ -160,7 +177,8 @@ fn export_bank(name: &str, header: &[u8], body: &[u8], out: &dyn Vfs, outdir: &s
     }
     let mut samples = Vec::new();
     for i in 0..sizes.len() {
-        let x = spu_adpcm(py_slice(body, offs[i], offs[i + 1]));
+        let vag = py_slice(body, offs[i], offs[i + 1]);
+        let x = spu_adpcm(vag);
         if x.len() < 32 || x.iter().map(|s| s.wrapping_abs()).max() == Some(0) {
             continue;
         }
@@ -169,8 +187,13 @@ fn export_bank(name: &str, header: &[u8], body: &[u8], out: &dyn Vfs, outdir: &s
         write_wav(out, &join(outdir, &fn_), &x, rate)?;
         // tones: [program, min key, max key, tone index] that play this sample (SePlay's code names the program and
         // the tone index; its key note = tone + 60)
-        samples.push(json!({"file": fn_, "rate": rate.round_ties_even() as i64,
-            "seconds": py_round(x.len() as f64 / rate, 2), "tones": keys_of.get(&(i + 1)).cloned().unwrap_or_default()}));
+        let mut sample = json!({"file": fn_, "rate": rate.round_ties_even() as i64,
+            "seconds": py_round(x.len() as f64 / rate, 2), "tones": keys_of.get(&(i + 1)).cloned().unwrap_or_default()});
+        // (a looping sample: where it goes back to, seconds)
+        if let Some(n) = spu_loop(vag) {
+            sample["loop"] = json!(n as f64 / rate);
+        }
+        samples.push(sample);
     }
     Ok(json!({"name": name, "samples": samples}))
 }
@@ -401,5 +424,16 @@ mod tests {
         let x = spu_adpcm(&b);
         assert_eq!(x.len(), 56);
         assert_eq!(&x[..2], &[4096, 8192]);
+        assert_eq!(spu_loop(&b), None);
+    }
+
+    #[test]
+    fn adpcm_loop() {
+        // a loop start (4) on block 1, the end repeating (3) on block 2: it goes back to block 1's first sample
+        let mut b = vec![0u8; 48];
+        (b[17], b[33]) = (4 | 2, 3);
+        assert_eq!(spu_loop(&b), Some(28));
+        b[17] = 2;
+        assert_eq!(spu_loop(&b), Some(0));
     }
 }
