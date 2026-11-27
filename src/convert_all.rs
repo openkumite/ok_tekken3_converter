@@ -391,7 +391,8 @@ mod tests {
     /// The optional parts: the movies by number, the music; nothing a fight reads.
     #[test]
     fn the_optional_parts() {
-        let of = ["video/00.avi", "video/19.flac", "video/20.avi", "video/21.flac", "audio/music/03.flac"].map(optional);
+        let of =
+            ["video/00.avi", "video/19.flac", "video/20.avi", "video/21.flac", "audio/music/03.flac"].map(optional);
         assert_eq!(of, [Some("endings"), Some("endings"), Some("opening"), Some("movies"), Some("music")]);
         for p in ["audio/sfx/000/000.wav", "audio/index.json", "video", "characters/model_000.glb", "gamedata/x.json"] {
             assert_eq!(optional(p), None, "{p}");
